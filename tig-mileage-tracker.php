@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
- * Description: Client-side CRA-compliant mileage engine for Homeextent Inc. (2019 Ram 1500 Rebel). Auto-loads bundled geo_cache.json, manages multi-year projects/suppliers in WP Admin, corroborates QBO receipts, and exports CPA-ready Excel workbooks.
- * Version: 3.2.0
+ * Description: CRA-compliant mileage engine & REST API collector for Homeextent Inc. (2019 Ram 1500 Rebel). Supports Pixel 9 Bluetooth/Android Auto live sync, Google Timeline JSON, QBO receipt corroboration, and CPA-ready Excel workbooks.
+ * Version: 3.3.0
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,8 +10,92 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.2.0');
+define('TIG_MILEAGE_VERSION', '3.3.0');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
+define('TIG_MILEAGE_TABLE', 'tig_mileage_trips');
+
+register_activation_hook(__FILE__, 'tig_mileage_activate');
+function tig_mileage_activate() {
+    tig_mileage_create_trips_table();
+    tig_mileage_maybe_migrate();
+}
+
+// Create or upgrade custom table for live Pixel 9 / Android Auto trips
+function tig_mileage_create_trips_table() {
+    global $wpdb;
+    $table_name = $wpdb->prefix . TIG_MILEAGE_TABLE;
+    $charset_collate = $wpdb->get_charset_collate();
+
+    require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+    $sql = "CREATE TABLE {$table_name} (
+        id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+        trip_uid varchar(100) NOT NULL,
+        tax_year varchar(4) NOT NULL,
+        start_ms bigint(20) unsigned NOT NULL,
+        end_ms bigint(20) unsigned NOT NULL,
+        start_lat decimal(10,6) DEFAULT NULL,
+        start_lon decimal(10,6) DEFAULT NULL,
+        end_lat decimal(10,6) DEFAULT NULL,
+        end_lon decimal(10,6) DEFAULT NULL,
+        gps_km decimal(8,2) NOT NULL DEFAULT 0.00,
+        trigger_source varchar(64) NOT NULL DEFAULT 'Uconnect BT',
+        origin_raw text DEFAULT NULL,
+        dest_raw text DEFAULT NULL,
+        manual_purpose varchar(120) NOT NULL DEFAULT '',
+        manual_category varchar(120) NOT NULL DEFAULT '',
+        photo_attachment_id bigint(20) unsigned NOT NULL DEFAULT 0,
+        created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY  (id),
+        UNIQUE KEY trip_uid (trip_uid),
+        KEY tax_year (tax_year),
+        KEY start_ms (start_ms)
+    ) {$charset_collate};";
+
+    dbDelta($sql);
+}
+
+// SiteGround / Apache FastCGI fallback for Application Passwords over REST API
+add_filter('determine_current_user', 'tig_mileage_rest_basic_auth_fallback', 20);
+function tig_mileage_rest_basic_auth_fallback($user_id) {
+    if (!empty($user_id)) {
+        return $user_id;
+    }
+    if (!defined('REST_REQUEST') || !REST_REQUEST) {
+        return $user_id;
+    }
+
+    $auth_header = '';
+    if (!empty($_SERVER['HTTP_AUTHORIZATION'])) {
+        $auth_header = wp_unslash($_SERVER['HTTP_AUTHORIZATION']);
+    } elseif (!empty($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+        $auth_header = wp_unslash($_SERVER['REDIRECT_HTTP_AUTHORIZATION']);
+    } elseif (!empty($_SERVER['HTTP_X_TIG_AUTH'])) {
+        $auth_header = wp_unslash($_SERVER['HTTP_X_TIG_AUTH']);
+    }
+
+    if (stripos($auth_header, 'Basic ') !== 0) {
+        return $user_id;
+    }
+
+    $decoded = base64_decode(substr($auth_header, 6), true);
+    if ($decoded === false || strpos($decoded, ':') === false) {
+        return $user_id;
+    }
+
+    list($username, $password) = explode(':', $decoded, 2);
+    if ($username === '' || $password === '') {
+        return $user_id;
+    }
+
+    if (function_exists('wp_authenticate_application_password')) {
+        $user = wp_authenticate_application_password(null, $username, $password);
+        if ($user instanceof WP_User) {
+            return $user->ID;
+        }
+    }
+
+    return $user_id;
+}
 
 // Register top-level admin menu
 add_action('admin_menu', 'tig_mileage_tracker_menu');
@@ -61,7 +145,7 @@ function tig_mileage_sanitize_keywords($raw_keywords) {
     return implode(', ', $clean);
 }
 
-// Safe upgrade migration preserving user-added rules while cleaning legacy v3.0.x comma-split tokens
+// Safe upgrade migration preserving user-added rules while cleaning legacy v3.0.x tokens & creating v3.3.0 table
 function tig_mileage_maybe_migrate() {
     $db_ver = get_option('tig_mileage_db_version', '');
     if ($db_ver === TIG_MILEAGE_VERSION) {
@@ -103,6 +187,10 @@ function tig_mileage_maybe_migrate() {
                 update_option('tig_mileage_locations', $locations, false);
             }
         }
+    }
+
+    if ($db_ver === '' || version_compare($db_ver, '3.3.0', '<')) {
+        tig_mileage_create_trips_table();
     }
 
     update_option('tig_mileage_db_version', TIG_MILEAGE_VERSION, false);
@@ -153,6 +241,24 @@ function tig_mileage_get_default_anchors() {
     );
 }
 
+function tig_mileage_get_locations_or_default() {
+    $locations = get_option('tig_mileage_locations');
+    if (!is_array($locations) || empty($locations)) {
+        $locations = tig_mileage_get_default_locations();
+        update_option('tig_mileage_locations', $locations, false);
+    }
+    return $locations;
+}
+
+function tig_mileage_get_anchors_or_default() {
+    $anchors = get_option('tig_mileage_anchors');
+    if (!is_array($anchors) || empty($anchors)) {
+        $anchors = tig_mileage_get_default_anchors();
+        update_option('tig_mileage_anchors', $anchors, false);
+    }
+    return $anchors;
+}
+
 // Load bundled data/geo_cache.json + runtime DB cache
 function tig_mileage_load_merged_geocache() {
     $bundled = array();
@@ -170,6 +276,583 @@ function tig_mileage_load_merged_geocache() {
     }
     return array_merge($bundled, $runtime);
 }
+
+// Persist new entries to runtime DB cache & data/geo_cache.json
+function tig_mileage_persist_geocache_entries($new_entries) {
+    if (!is_array($new_entries) || empty($new_entries)) {
+        return count(tig_mileage_load_merged_geocache());
+    }
+    $runtime = get_option('tig_mileage_runtime_geocache', array());
+    if (!is_array($runtime)) {
+        $runtime = array();
+    }
+    foreach ($new_entries as $k => $v) {
+        $clean_k = sanitize_text_field($k);
+        $clean_v = sanitize_text_field($v);
+        if ($clean_k !== '' && $clean_v !== '') {
+            $runtime[$clean_k] = $clean_v;
+        }
+    }
+    update_option('tig_mileage_runtime_geocache', $runtime, false);
+    $merged = tig_mileage_load_merged_geocache();
+
+    $data_dir = TIG_MILEAGE_DIR . 'data';
+    if (!file_exists($data_dir)) {
+        wp_mkdir_p($data_dir);
+    }
+    $json_path = $data_dir . '/geo_cache.json';
+    if (is_writable($data_dir) && (!file_exists($json_path) || is_writable($json_path))) {
+        file_put_contents($json_path, wp_json_encode($merged, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    }
+    return count($merged);
+}
+
+// Server-side coordinate lookup with Nominatim fallback + geo_cache persistence
+function tig_mileage_resolve_coord_server($lat, $lon, $fallback_raw = '') {
+    $fallback_raw = trim((string) $fallback_raw);
+    if ($lat === null || $lon === null || !is_numeric($lat) || !is_numeric($lon)) {
+        return $fallback_raw;
+    }
+    $lat_f = floatval($lat);
+    $lon_f = floatval($lon);
+    if ($lat_f == 0.0 && $lon_f == 0.0) {
+        return $fallback_raw;
+    }
+    $key = sprintf('%.4f,%.4f', $lat_f, $lon_f);
+    $cache = tig_mileage_load_merged_geocache();
+    if (!empty($cache[$key])) {
+        return $cache[$key];
+    }
+
+    if ($fallback_raw !== '' && strpos($fallback_raw, ',') !== false && !preg_match('/^-?\d+\.\d+,\s*-?\d+\.\d+$/', $fallback_raw)) {
+        tig_mileage_persist_geocache_entries(array($key => $fallback_raw));
+        return $fallback_raw;
+    }
+
+    $url = add_query_arg(
+        array(
+            'format'         => 'jsonv2',
+            'lat'            => $lat_f,
+            'lon'            => $lon_f,
+            'zoom'           => 18,
+            'addressdetails' => 1
+        ),
+        'https://nominatim.openstreetmap.org/reverse'
+    );
+    $resp = wp_remote_get(
+        $url,
+        array(
+            'timeout' => 8,
+            'headers' => array(
+                'User-Agent' => 'TIG-Mileage-Tracker/' . TIG_MILEAGE_VERSION . ' (Homeextent Inc.; theinnovativegroup.ca)'
+            )
+        )
+    );
+    if (!is_wp_error($resp) && wp_remote_retrieve_response_code($resp) === 200) {
+        $body = json_decode(wp_remote_retrieve_body($resp), true);
+        if (is_array($body) && !empty($body['display_name'])) {
+            $addr = sanitize_text_field($body['display_name']);
+            tig_mileage_persist_geocache_entries(array($key => $addr));
+            return $addr;
+        }
+    }
+
+    return $fallback_raw !== '' ? $fallback_raw : $key;
+}
+
+// Server-side mirror of CRA endpoint classification (for instant Pixel 9 / Android Auto feedback)
+function tig_mileage_classify_endpoint_server($addr, $day, $year, $locations) {
+    $addr = (string) $addr;
+    $a_norm = trim(preg_replace('/\s+/', ' ', str_replace(',', ' ', strtolower($addr))));
+
+    $out_of_region = array(
+        'burlington', 'clarington', 'cobourg', 'cramahe', 'dunnville',
+        'hamilton', 'kawartha lakes', 'mississauga', 'oakville', 'oshawa',
+        'picton', 'port hope', 'quinte west', 'toronto', 'brighton', 'station road'
+    );
+    foreach ($out_of_region as $city) {
+        if ($a_norm !== '' && strpos($a_norm, $city) !== false) {
+            return array($addr, 'Personal', 'Out of Region');
+        }
+    }
+
+    if ($a_norm !== '' && strpos($a_norm, 'ymca') !== false) {
+        if ($day === 'Saturday' || $day === 'Sunday') {
+            return array('YMCA Drive (Fit4Less)', 'Personal', 'Gym / Personal');
+        }
+        return array('Home Depot (20 YMCA Dr, St. Catharines)', 'Materials / Supplies', 'Home Depot - St. Catharines');
+    }
+
+    foreach ($locations as $loc) {
+        $loc_year = $loc['year'] ?? 'ALL';
+        if ($loc_year !== 'ALL' && $loc_year !== (string) $year) {
+            continue;
+        }
+        $kw_list = array_filter(array_map('trim', explode(',', strtolower($loc['keywords'] ?? ''))));
+        foreach ($kw_list as $kw) {
+            if ($kw === '' || preg_match('/^\d+$/', $kw) || $kw === 'ontario') {
+                continue;
+            }
+            if ($a_norm !== '' && strpos($a_norm, $kw) !== false) {
+                return array(
+                    $loc['name'],
+                    $loc['purpose'] ?? 'Project Site Visit',
+                    $loc['category'] ?? 'Project Site'
+                );
+            }
+        }
+    }
+
+    return array($addr, 'Review', 'Uncategorized');
+}
+
+// Format a database trip row into enriched Toronto-timezone trip payload
+function tig_mileage_format_live_trip_row($row, $locations = null) {
+    if ($locations === null) {
+        $locations = tig_mileage_get_locations_or_default();
+    }
+    $tz = new DateTimeZone('America/Toronto');
+    $start_sec = (int) floor(((float) $row['start_ms']) / 1000);
+    $end_sec = (int) floor(((float) $row['end_ms']) / 1000);
+    if ($end_sec < $start_sec) {
+        $end_sec = $start_sec;
+    }
+
+    $dt_start = new DateTime('@' . $start_sec);
+    $dt_start->setTimezone($tz);
+    $dt_end = new DateTime('@' . $end_sec);
+    $dt_end->setTimezone($tz);
+
+    $date_str = $dt_start->format('Y-m-d');
+    $day_str = $dt_start->format('l');
+    $dep_str = $dt_start->format('h:i A');
+    $arr_str = $dt_end->format('h:i A');
+    $year_str = $dt_start->format('Y');
+
+    $orig_raw = !empty($row['origin_raw'])
+        ? $row['origin_raw']
+        : (($row['start_lat'] !== null && $row['start_lon'] !== null) ? sprintf('%.4f,%.4f', $row['start_lat'], $row['start_lon']) : '');
+    $dest_raw = !empty($row['dest_raw'])
+        ? $row['dest_raw']
+        : (($row['end_lat'] !== null && $row['end_lon'] !== null) ? sprintf('%.4f,%.4f', $row['end_lat'], $row['end_lon']) : '');
+
+    list($orig_clean) = tig_mileage_classify_endpoint_server($orig_raw, $day_str, $year_str, $locations);
+    list($dest_clean, $purpose, $category) = tig_mileage_classify_endpoint_server($dest_raw, $day_str, $year_str, $locations);
+
+    // Return-from-Personal rule
+    foreach (array('Personal', 'ZEHRS', 'Fit4Less', 'Out of Region') as $p_kw) {
+        if (strpos($orig_clean, $p_kw) !== false && $purpose === 'Return to Head Office / Dispatch') {
+            $purpose = 'Personal';
+            $category = 'Return from Personal';
+            break;
+        }
+    }
+
+    if (!empty($row['manual_purpose'])) {
+        $purpose = $row['manual_purpose'];
+        $category = !empty($row['manual_category'])
+            ? $row['manual_category']
+            : ($purpose === 'Personal' ? 'Personal (Pixel / Manual)' : $purpose);
+    }
+
+    return array(
+        'id'             => (int) $row['id'],
+        'trip_uid'       => $row['trip_uid'],
+        'tax_year'       => $year_str,
+        'start_ms'       => (int) $row['start_ms'],
+        'end_ms'         => (int) $row['end_ms'],
+        'date'           => $date_str,
+        'day'            => $day_str,
+        'departure'      => $dep_str,
+        'arrival'        => $arr_str,
+        'origin_raw'     => $orig_raw,
+        'dest_raw'       => $dest_raw,
+        'origin'         => $orig_clean,
+        'destination'    => $dest_clean,
+        'gps_km'         => round(floatval($row['gps_km']), 2),
+        'trigger_source' => $row['trigger_source'],
+        'purpose'        => $purpose,
+        'category'       => $category,
+        'manual_purpose' => $row['manual_purpose'],
+        'manual_category'=> $row['manual_category']
+    );
+}
+
+// Query live trips for a target tax year
+function tig_mileage_fetch_live_trips($year = null, $limit = 5000) {
+    global $wpdb;
+    $table_name = $wpdb->prefix . TIG_MILEAGE_TABLE;
+    if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name)) !== $table_name) {
+        return array();
+    }
+
+    if ($year !== null && $year !== '') {
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT * FROM {$table_name} WHERE tax_year = %s ORDER BY start_ms ASC LIMIT %d",
+                (string) $year,
+                (int) $limit
+            ),
+            ARRAY_A
+        );
+    } else {
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT * FROM {$table_name} ORDER BY start_ms DESC LIMIT %d",
+                (int) $limit
+            ),
+            ARRAY_A
+        );
+    }
+
+    if (!is_array($rows)) {
+        return array();
+    }
+
+    $locations = tig_mileage_get_locations_or_default();
+    $out = array();
+    foreach ($rows as $r) {
+        $out[] = tig_mileage_format_live_trip_row($r, $locations);
+    }
+    return $out;
+}
+
+// ============================================================================
+// REST API: /wp-json/tig-mileage/v1/ (Pixel 9 & Android Auto Companion)
+// ============================================================================
+add_action('rest_api_init', 'tig_mileage_register_rest_routes');
+function tig_mileage_register_rest_routes() {
+    $ns = 'tig-mileage/v1';
+
+    register_rest_route($ns, '/status', array(
+        'methods'             => WP_REST_Server::READABLE,
+        'callback'            => 'tig_mileage_rest_get_status',
+        'permission_callback' => 'tig_mileage_rest_permission'
+    ));
+
+    register_rest_route($ns, '/trips', array(
+        array(
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => 'tig_mileage_rest_list_trips',
+            'permission_callback' => 'tig_mileage_rest_permission'
+        ),
+        array(
+            'methods'             => WP_REST_Server::CREATABLE,
+            'callback'            => 'tig_mileage_rest_upsert_trip',
+            'permission_callback' => 'tig_mileage_rest_permission'
+        )
+    ));
+
+    register_rest_route($ns, '/trips/(?P<id>\d+)', array(
+        'methods'             => 'PATCH, POST',
+        'callback'            => 'tig_mileage_rest_update_trip',
+        'permission_callback' => 'tig_mileage_rest_permission'
+    ));
+
+    register_rest_route($ns, '/locations', array(
+        'methods'             => WP_REST_Server::CREATABLE,
+        'callback'            => 'tig_mileage_rest_add_location',
+        'permission_callback' => 'tig_mileage_rest_permission'
+    ));
+
+    register_rest_route($ns, '/anchors', array(
+        'methods'             => WP_REST_Server::CREATABLE,
+        'callback'            => 'tig_mileage_rest_update_anchor',
+        'permission_callback' => 'tig_mileage_rest_permission'
+    ));
+}
+
+function tig_mileage_rest_permission() {
+    return current_user_can('manage_options');
+}
+
+function tig_mileage_rest_get_status(WP_REST_Request $request) {
+    tig_mileage_maybe_migrate();
+    $locations = tig_mileage_get_locations_or_default();
+    $anchors = tig_mileage_get_anchors_or_default();
+    $recent_trips = tig_mileage_fetch_live_trips(null, 25);
+
+    return rest_ensure_response(array(
+        'ok'             => true,
+        'plugin'         => 'tig-mileage-tracker',
+        'version'        => TIG_MILEAGE_VERSION,
+        'site_name'      => get_bloginfo('name'),
+        'geocache_count' => count(tig_mileage_load_merged_geocache()),
+        'locations'      => array_values($locations),
+        'anchors'        => $anchors,
+        'recent_trips'   => $recent_trips
+    ));
+}
+
+function tig_mileage_rest_list_trips(WP_REST_Request $request) {
+    $year = sanitize_text_field((string) $request->get_param('year'));
+    $trips = tig_mileage_fetch_live_trips($year !== '' ? $year : null, 5000);
+    return rest_ensure_response(array(
+        'ok'    => true,
+        'count' => count($trips),
+        'trips' => $trips
+    ));
+}
+
+function tig_mileage_rest_upsert_trip(WP_REST_Request $request) {
+    global $wpdb;
+    tig_mileage_maybe_migrate();
+
+    $params = $request->get_json_params();
+    if (!is_array($params) || empty($params)) {
+        $params = $request->get_body_params();
+    }
+
+    $start_ms = isset($params['start_ms']) ? (int) $params['start_ms'] : 0;
+    $end_ms = isset($params['end_ms']) ? (int) $params['end_ms'] : $start_ms;
+    if ($start_ms <= 0) {
+        return new WP_Error('invalid_start_ms', 'Valid start_ms epoch milliseconds required.', array('status' => 400));
+    }
+
+    $trip_uid = sanitize_text_field((string) ($params['trip_uid'] ?? ('pixel_' . $start_ms)));
+    $gps_km = round(max(0.0, floatval($params['gps_km'] ?? 0)), 2);
+    $trigger_source = sanitize_text_field((string) ($params['trigger_source'] ?? 'Uconnect BT'));
+
+    $start_lat = isset($params['start_lat']) && is_numeric($params['start_lat']) ? floatval($params['start_lat']) : null;
+    $start_lon = isset($params['start_lon']) && is_numeric($params['start_lon']) ? floatval($params['start_lon']) : null;
+    $end_lat = isset($params['end_lat']) && is_numeric($params['end_lat']) ? floatval($params['end_lat']) : null;
+    $end_lon = isset($params['end_lon']) && is_numeric($params['end_lon']) ? floatval($params['end_lon']) : null;
+
+    $origin_raw_in = sanitize_text_field((string) ($params['origin_raw'] ?? ''));
+    $dest_raw_in = sanitize_text_field((string) ($params['dest_raw'] ?? ''));
+
+    $origin_resolved = tig_mileage_resolve_coord_server($start_lat, $start_lon, $origin_raw_in);
+    $dest_resolved = tig_mileage_resolve_coord_server($end_lat, $end_lon, $dest_raw_in);
+
+    $manual_purpose = sanitize_text_field((string) ($params['manual_purpose'] ?? ''));
+    $manual_category = sanitize_text_field((string) ($params['manual_category'] ?? ''));
+
+    $tz = new DateTimeZone('America/Toronto');
+    $dt_start = new DateTime('@' . (int) floor($start_ms / 1000));
+    $dt_start->setTimezone($tz);
+    $tax_year = $dt_start->format('Y');
+
+    $table_name = $wpdb->prefix . TIG_MILEAGE_TABLE;
+    $existing = $wpdb->get_row(
+        $wpdb->prepare("SELECT * FROM {$table_name} WHERE trip_uid = %s", $trip_uid),
+        ARRAY_A
+    );
+
+    if ($existing) {
+        $keep_purpose = $manual_purpose !== '' ? $manual_purpose : $existing['manual_purpose'];
+        $keep_category = $manual_category !== '' ? $manual_category : $existing['manual_category'];
+        $wpdb->update(
+            $table_name,
+            array(
+                'tax_year'        => $tax_year,
+                'start_ms'        => $start_ms,
+                'end_ms'          => $end_ms,
+                'start_lat'       => $start_lat,
+                'start_lon'       => $start_lon,
+                'end_lat'         => $end_lat,
+                'end_lon'         => $end_lon,
+                'gps_km'          => $gps_km,
+                'trigger_source'  => $trigger_source,
+                'origin_raw'      => $origin_resolved,
+                'dest_raw'        => $dest_resolved,
+                'manual_purpose'  => $keep_purpose,
+                'manual_category' => $keep_category
+            ),
+            array('id' => (int) $existing['id'])
+        );
+        $trip_id = (int) $existing['id'];
+    } else {
+        $wpdb->insert(
+            $table_name,
+            array(
+                'trip_uid'        => $trip_uid,
+                'tax_year'        => $tax_year,
+                'start_ms'        => $start_ms,
+                'end_ms'          => $end_ms,
+                'start_lat'       => $start_lat,
+                'start_lon'       => $start_lon,
+                'end_lat'         => $end_lat,
+                'end_lon'         => $end_lon,
+                'gps_km'          => $gps_km,
+                'trigger_source'  => $trigger_source,
+                'origin_raw'      => $origin_resolved,
+                'dest_raw'        => $dest_resolved,
+                'manual_purpose'  => $manual_purpose,
+                'manual_category' => $manual_category
+            )
+        );
+        $trip_id = (int) $wpdb->insert_id;
+    }
+
+    $saved_row = $wpdb->get_row(
+        $wpdb->prepare("SELECT * FROM {$table_name} WHERE id = %d", $trip_id),
+        ARRAY_A
+    );
+    $formatted = tig_mileage_format_live_trip_row($saved_row);
+
+    return rest_ensure_response(array_merge(array('ok' => true), $formatted));
+}
+
+function tig_mileage_rest_update_trip(WP_REST_Request $request) {
+    global $wpdb;
+    $id = (int) $request->get_param('id');
+    $table_name = $wpdb->prefix . TIG_MILEAGE_TABLE;
+
+    $row = $wpdb->get_row(
+        $wpdb->prepare("SELECT * FROM {$table_name} WHERE id = %d", $id),
+        ARRAY_A
+    );
+    if (!$row) {
+        return new WP_Error('not_found', 'Trip not found.', array('status' => 404));
+    }
+
+    $params = $request->get_json_params();
+    if (!is_array($params) || empty($params)) {
+        $params = $request->get_body_params();
+    }
+
+    $purpose = sanitize_text_field((string) ($params['purpose'] ?? $params['manual_purpose'] ?? ''));
+    $category = sanitize_text_field((string) ($params['category'] ?? $params['manual_category'] ?? ''));
+    $dest_override = sanitize_text_field((string) ($params['destination'] ?? ''));
+
+    $update_data = array(
+        'manual_purpose'  => $purpose,
+        'manual_category' => $category
+    );
+    if ($dest_override !== '') {
+        $update_data['dest_raw'] = $dest_override;
+    }
+
+    $wpdb->update($table_name, $update_data, array('id' => $id));
+
+    $updated_row = $wpdb->get_row(
+        $wpdb->prepare("SELECT * FROM {$table_name} WHERE id = %d", $id),
+        ARRAY_A
+    );
+    $formatted = tig_mileage_format_live_trip_row($updated_row);
+
+    return rest_ensure_response(array_merge(array('ok' => true), $formatted));
+}
+
+function tig_mileage_rest_add_location(WP_REST_Request $request) {
+    $params = $request->get_json_params();
+    if (!is_array($params) || empty($params)) {
+        $params = $request->get_body_params();
+    }
+
+    $name = sanitize_text_field((string) ($params['name'] ?? ''));
+    if ($name === '') {
+        return new WP_Error('missing_name', 'Location display name is required.', array('status' => 400));
+    }
+
+    $raw_kw = (string) ($params['keywords'] ?? '');
+    if (trim($raw_kw) === '') {
+        $parts = array_map('trim', explode(',', strtolower($name)));
+        $raw_kw = $parts[0] ?? strtolower($name);
+    }
+    $clean_kw = tig_mileage_sanitize_keywords($raw_kw);
+    if ($clean_kw === '') {
+        $clean_kw = strtolower(preg_replace('/[^a-z0-9\s]/i', '', $name));
+    }
+
+    $purpose = sanitize_text_field((string) ($params['purpose'] ?? 'Project Site Visit'));
+    $category = sanitize_text_field((string) ($params['category'] ?? $purpose));
+    $tz = new DateTimeZone('America/Toronto');
+    $now = new DateTime('now', $tz);
+    $year = sanitize_text_field((string) ($params['year'] ?? $now->format('Y')));
+
+    $lat = isset($params['lat']) && is_numeric($params['lat']) ? floatval($params['lat']) : null;
+    $lon = isset($params['lon']) && is_numeric($params['lon']) ? floatval($params['lon']) : null;
+    if ($lat !== null && $lon !== null && ($lat != 0.0 || $lon != 0.0)) {
+        $coord_key = sprintf('%.4f,%.4f', $lat, $lon);
+        tig_mileage_persist_geocache_entries(array($coord_key => $name));
+    }
+
+    $locations = tig_mileage_get_locations_or_default();
+    $new_rule = array(
+        'id'       => 'loc_' . time() . '_' . wp_rand(100, 999),
+        'name'     => $name,
+        'keywords' => $clean_kw,
+        'purpose'  => $purpose,
+        'category' => $category,
+        'year'     => $year
+    );
+    array_unshift($locations, $new_rule);
+    update_option('tig_mileage_locations', $locations, false);
+
+    return rest_ensure_response(array(
+        'ok'        => true,
+        'location'  => $new_rule,
+        'locations' => array_values($locations)
+    ));
+}
+
+function tig_mileage_rest_update_anchor(WP_REST_Request $request) {
+    $params = $request->get_json_params();
+    if (!is_array($params) || empty($params)) {
+        $params = $request->get_body_params();
+    }
+
+    $odo = floatval($params['odo'] ?? 0);
+    if ($odo <= 0) {
+        return new WP_Error('invalid_odo', 'Positive odometer reading (km) is required.', array('status' => 400));
+    }
+
+    $tz = new DateTimeZone('America/Toronto');
+    $now = new DateTime('now', $tz);
+    $year = sanitize_text_field((string) ($params['year'] ?? $now->format('Y')));
+    $date = sanitize_text_field((string) ($params['date'] ?? $now->format('Y-m-d')));
+    $mode = sanitize_text_field((string) ($params['mode'] ?? ($year === '2026' ? 'pivot' : 'forward')));
+
+    $anchors = tig_mileage_get_anchors_or_default();
+    $anchors[$year] = array(
+        'date' => $date,
+        'odo'  => round($odo, 1),
+        'mode' => $mode
+    );
+    update_option('tig_mileage_anchors', $anchors, false);
+
+    $attachment_id = 0;
+    $photo_url = '';
+    if (!empty($params['photo_base64'])) {
+        $b64 = (string) $params['photo_base64'];
+        if (strpos($b64, 'base64,') !== false) {
+            $b64 = substr($b64, strpos($b64, 'base64,') + 7);
+        }
+        $binary = base64_decode($b64, true);
+        if ($binary !== false && strlen($binary) > 100) {
+            $fname = sanitize_file_name('tig-odo-' . $date . '-' . round($odo, 1) . 'km.jpg');
+            $upload = wp_upload_bits($fname, null, $binary);
+            if (empty($upload['error']) && !empty($upload['file'])) {
+                require_once ABSPATH . 'wp-admin/includes/image.php';
+                $filetype = wp_check_filetype($upload['file'], null);
+                $att_data = array(
+                    'post_mime_type' => $filetype['type'] ?: 'image/jpeg',
+                    'post_title'     => sprintf('RAM 1500 Rebel Odometer Check-In: %.1f km (%s)', $odo, $date),
+                    'post_content'   => 'CRA Odometer Verification Photo uploaded via Pixel 9 Companion',
+                    'post_status'    => 'inherit'
+                );
+                $attachment_id = (int) wp_insert_attachment($att_data, $upload['file']);
+                if ($attachment_id > 0) {
+                    $meta = wp_generate_attachment_metadata($attachment_id, $upload['file']);
+                    wp_update_attachment_metadata($attachment_id, $meta);
+                    $photo_url = wp_get_attachment_url($attachment_id);
+                }
+            }
+        }
+    }
+
+    return rest_ensure_response(array(
+        'ok'            => true,
+        'anchors'       => $anchors,
+        'attachment_id' => $attachment_id,
+        'photo_url'     => $photo_url
+    ));
+}
+
+// ============================================================================
+// WP ADMIN AJAX HANDLERS
+// ============================================================================
 
 // AJAX: Save Locations & Anchors
 add_action('wp_ajax_tig_save_settings', 'tig_mileage_ajax_save_settings');
@@ -231,59 +914,80 @@ function tig_mileage_ajax_save_geocache() {
     }
 
     $entries = json_decode(wp_unslash($_POST['entries'] ?? '{}'), true);
-    if (!is_array($entries) || empty($entries)) {
-        wp_send_json_success(array('total' => count(tig_mileage_load_merged_geocache())));
+    $total = tig_mileage_persist_geocache_entries($entries);
+    wp_send_json_success(array('total' => $total));
+}
+
+// AJAX: Fetch, Update, or Delete Live Pixel 9 Trips in WP Admin
+add_action('wp_ajax_tig_live_trips_action', 'tig_mileage_ajax_live_trips_action');
+function tig_mileage_ajax_live_trips_action() {
+    global $wpdb;
+    check_ajax_referer('tig_mileage_nonce', 'security');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error('Unauthorized');
     }
 
-    $runtime = get_option('tig_mileage_runtime_geocache', array());
-    if (!is_array($runtime)) {
-        $runtime = array();
-    }
+    $op = sanitize_text_field((string) ($_POST['op'] ?? 'list'));
+    $table_name = $wpdb->prefix . TIG_MILEAGE_TABLE;
 
-    foreach ($entries as $k => $v) {
-        $clean_k = sanitize_text_field($k);
-        $clean_v = sanitize_text_field($v);
-        if ($clean_k !== '' && $clean_v !== '') {
-            $runtime[$clean_k] = $clean_v;
+    if ($op === 'list') {
+        $year = sanitize_text_field((string) ($_POST['year'] ?? ''));
+        $trips = tig_mileage_fetch_live_trips($year !== '' ? $year : null, 5000);
+        wp_send_json_success(array('trips' => $trips));
+    } elseif ($op === 'update') {
+        $id = (int) ($_POST['id'] ?? 0);
+        $purpose = sanitize_text_field((string) ($_POST['purpose'] ?? ''));
+        $category = sanitize_text_field((string) ($_POST['category'] ?? ''));
+        if ($id > 0) {
+            $wpdb->update(
+                $table_name,
+                array('manual_purpose' => $purpose, 'manual_category' => $category),
+                array('id' => $id)
+            );
         }
+        wp_send_json_success(array('message' => 'Live trip updated.'));
+    } elseif ($op === 'delete') {
+        $id = (int) ($_POST['id'] ?? 0);
+        if ($id > 0) {
+            $wpdb->delete($table_name, array('id' => $id));
+        }
+        wp_send_json_success(array('message' => 'Live trip deleted.'));
     }
 
-    update_option('tig_mileage_runtime_geocache', $runtime, false);
-    $merged = tig_mileage_load_merged_geocache();
-
-    $data_dir = TIG_MILEAGE_DIR . 'data';
-    if (!file_exists($data_dir)) {
-        wp_mkdir_p($data_dir);
-    }
-    $json_path = $data_dir . '/geo_cache.json';
-    if (is_writable($data_dir) && (!file_exists($json_path) || is_writable($json_path))) {
-        file_put_contents($json_path, wp_json_encode($merged, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-    }
-
-    wp_send_json_success(array('total' => count($merged)));
+    wp_send_json_error('Unknown operation.');
 }
 
 function tig_mileage_tracker_admin_page() {
+    global $wpdb;
+    tig_mileage_maybe_migrate();
+
     $geo_cache = tig_mileage_load_merged_geocache();
-    $locations = get_option('tig_mileage_locations');
-    if (!is_array($locations) || empty($locations)) {
-        $locations = tig_mileage_get_default_locations();
-        update_option('tig_mileage_locations', $locations, false);
-    }
-    $anchors = get_option('tig_mileage_anchors');
-    if (!is_array($anchors) || empty($anchors)) {
-        $anchors = tig_mileage_get_default_anchors();
-        update_option('tig_mileage_anchors', $anchors, false);
-    }
+    $locations = tig_mileage_get_locations_or_default();
+    $anchors = tig_mileage_get_anchors_or_default();
     $nonce = wp_create_nonce('tig_mileage_nonce');
     $ajax_url = admin_url('admin-ajax.php');
+    $rest_base = rest_url('tig-mileage/v1');
     $bundled_exists = file_exists(TIG_MILEAGE_DIR . 'data/geo_cache.json');
+
+    $table_name = $wpdb->prefix . TIG_MILEAGE_TABLE;
+    $live_counts = array('2025' => 0, '2026' => 0, '2027' => 0, 'total' => 0);
+    if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name)) === $table_name) {
+        $rows = $wpdb->get_results("SELECT tax_year, COUNT(*) AS cnt FROM {$table_name} GROUP BY tax_year", ARRAY_A);
+        if (is_array($rows)) {
+            foreach ($rows as $r) {
+                $yr = (string) $r['tax_year'];
+                $c = (int) $r['cnt'];
+                $live_counts[$yr] = $c;
+                $live_counts['total'] += $c;
+            }
+        }
+    }
     ?>
     <div class="wrap" style="max-width: 1240px; margin-top: 20px;">
         <div style="background: #1F497D; color: #fff; padding: 18px 24px; border-radius: 6px 6px 0 0; display: flex; justify-content: space-between; align-items: center;">
             <div>
                 <h1 style="color: #fff; margin: 0; font-size: 20px; font-weight: 600;">TIG Corporate Mileage Tracker</h1>
-                <span style="font-size: 12px; opacity: 0.85;">Homeextent Inc. o/a The Innovative Group &bull; 2019 Ram 1500 Rebel</span>
+                <span style="font-size: 12px; opacity: 0.85;">Homeextent Inc. o/a The Innovative Group &bull; 2019 Ram 1500 Rebel (Uconnect BT + Android Auto Ready)</span>
             </div>
             <span style="background: rgba(255,255,255,0.15); padding: 4px 10px; border-radius: 4px; font-size: 12px;">v<?php echo esc_html(TIG_MILEAGE_VERSION); ?></span>
         </div>
@@ -303,11 +1007,11 @@ function tig_mileage_tracker_admin_page() {
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 22px;">
                     <div style="border: 1px solid #c3e6cb; background: #f2fbf4; border-radius: 6px; padding: 14px 16px;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <strong style="font-size: 14px; color: #1d2327;">1. Built-In Geo-Cache Status</strong>
+                            <strong style="font-size: 14px; color: #1d2327;">1. Built-In Geo-Cache &amp; REST API Status</strong>
                             <span class="dashicons dashicons-yes-alt" style="color: #2e7d32;"></span>
                         </div>
                         <div id="status-cache" style="margin-top: 6px; font-size: 12px; color: #2e7d32; font-weight: 600;">
-                            &#10003; <?php echo count($geo_cache); ?> coordinates auto-loaded <?php echo $bundled_exists ? '(from plugin /data/geo_cache.json + DB)' : '(from DB — drop geo_cache.json into /data/ or import in Tab 2)'; ?>
+                            &#10003; <?php echo count($geo_cache); ?> coordinates loaded <?php echo $bundled_exists ? '(data/geo_cache.json + DB)' : '(DB)'; ?> &bull; <?php echo (int) $live_counts['total']; ?> Pixel 9 live trips stored
                         </div>
                     </div>
 
@@ -322,7 +1026,7 @@ function tig_mileage_tracker_admin_page() {
                 </div>
 
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                    <h3 style="margin: 0; color: #1d2327;">Step 2: Drop Google Timeline (.json)</h3>
+                    <h3 style="margin: 0; color: #1d2327;">Step 2: Select Trip Data Source</h3>
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <label for="select-year" style="font-size: 12px; font-weight: 600;">Target Tax Year:</label>
                         <select id="select-year" style="font-size: 13px;">
@@ -333,17 +1037,56 @@ function tig_mileage_tracker_admin_page() {
                     </div>
                 </div>
 
-                <div id="box-timeline" style="border: 2px dashed #c3c4c7; border-radius: 6px; padding: 32px 20px; text-align: center; background: #f9f9f9; cursor: pointer;">
-                    <span class="dashicons dashicons-cloud-upload" style="font-size: 36px; width: 36px; height: 36px; color: #1F497D;"></span>
-                    <div style="font-size: 15px; font-weight: 600; color: #1d2327; margin-top: 8px;">Drop Timeline.json or location-history.json Here</div>
-                    <div style="font-size: 12px; color: #646970; margin-top: 4px;">Processed 100% locally in your browser (supports Android <code>semanticSegments</code> &amp; iOS/Takeout <code>timelineObjects</code>, 50MB+).</div>
-                    <div id="progress-wrap" style="display: none; max-width: 480px; margin: 14px auto 0;">
-                        <div style="background: #e0e0e0; border-radius: 4px; height: 8px; overflow: hidden;">
-                            <div id="progress-bar" style="width: 0%; height: 100%; background: #1F497D; transition: width 0.25s;"></div>
+                <!-- Dual Source Grid: Live Pixel 9 Collector vs Google Timeline JSON -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 12px;">
+                    <div style="border: 2px solid #1F497D; border-radius: 6px; padding: 24px 20px; text-align: center; background: #f4f8fc;">
+                        <span class="dashicons dashicons-smartphone" style="font-size: 34px; width: 34px; height: 34px; color: #1F497D;"></span>
+                        <div style="font-size: 15px; font-weight: 600; color: #1d2327; margin-top: 8px;">Source A: Live Pixel 9 / Android Auto Trips</div>
+                        <div id="live-source-subtitle" style="font-size: 12px; color: #50575e; margin-top: 4px;">
+                            Zero-touch drives synced automatically from your 2019 Ram Rebel.
+                        </div>
+                        <div style="margin-top: 14px; display: flex; justify-content: center; gap: 8px; flex-wrap: wrap;">
+                            <button type="button" id="btn-load-live-trips" class="button button-primary">Load Live Pixel 9 Trips</button>
+                            <button type="button" id="btn-toggle-live-manager" class="button">Inspect / Edit Stored Trips</button>
                         </div>
                     </div>
-                    <div id="status-timeline" style="margin-top: 10px; font-size: 12px; font-weight: 600; color: #1F497D;"></div>
-                    <input type="file" id="input-timeline" accept=".json" style="display: none;" />
+
+                    <div id="box-timeline" style="border: 2px dashed #c3c4c7; border-radius: 6px; padding: 24px 20px; text-align: center; background: #f9f9f9; cursor: pointer;">
+                        <span class="dashicons dashicons-cloud-upload" style="font-size: 34px; width: 34px; height: 34px; color: #1F497D;"></span>
+                        <div style="font-size: 15px; font-weight: 600; color: #1d2327; margin-top: 8px;">Source B: Drop Google Timeline (.json)</div>
+                        <div style="font-size: 12px; color: #646970; margin-top: 4px;">Historical 2025/2026 baseline import (supports Android <code>semanticSegments</code> &amp; iOS <code>timelineObjects</code>, 50MB+).</div>
+                        <input type="file" id="input-timeline" accept=".json" style="display: none;" />
+                    </div>
+                </div>
+
+                <div id="progress-wrap" style="display: none; max-width: 560px; margin: 10px auto 0;">
+                    <div style="background: #e0e0e0; border-radius: 4px; height: 8px; overflow: hidden;">
+                        <div id="progress-bar" style="width: 0%; height: 100%; background: #1F497D; transition: width 0.25s;"></div>
+                    </div>
+                </div>
+                <div id="status-timeline" style="margin-top: 8px; text-align: center; font-size: 12px; font-weight: 600; color: #1F497D;"></div>
+
+                <!-- Live Pixel 9 Trip Manager Drawer -->
+                <div id="live-manager-section" style="display: none; margin-top: 18px; border: 1px solid #c3c4c7; background: #fafafa; border-radius: 6px; padding: 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <strong style="color: #1F497D; font-size: 14px;">Stored Pixel 9 Trips (<span id="live-mgr-year">2026</span>)</strong>
+                        <button type="button" id="btn-close-live-manager" class="button button-small">Hide</button>
+                    </div>
+                    <div style="max-height: 280px; overflow-y: auto; border: 1px solid #e5e5e5; background: #fff;">
+                        <table class="widefat striped" style="border: none;">
+                            <thead>
+                                <tr>
+                                    <th>Date &amp; Time</th>
+                                    <th>Trigger</th>
+                                    <th>Origin &rarr; Destination</th>
+                                    <th>GPS KM</th>
+                                    <th>Purpose</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="live-mgr-tbody"></tbody>
+                        </table>
+                    </div>
                 </div>
 
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 26px; margin-bottom: 12px;">
@@ -421,11 +1164,23 @@ function tig_mileage_tracker_admin_page() {
 
             <!-- TAB 2: PROJECTS, SUPPLIERS & ODOMETER ANCHORS -->
             <div id="tab-locations" class="tig-tab-panel" style="display: none;">
+                <!-- Pixel 9 & Android Auto Connection Info Banner -->
+                <div style="border: 1px solid #b8daff; background: #f0f7ff; border-radius: 6px; padding: 14px 18px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                    <div>
+                        <strong style="color: #1F497D; font-size: 13px;">Pixel 9 &amp; Android Auto REST Endpoint:</strong>
+                        <code style="margin-left: 6px; font-size: 12px; background: #fff; padding: 3px 6px; border: 1px solid #d0e3f7;"><?php echo esc_html($rest_base); ?></code>
+                        <div style="font-size: 11px; color: #50575e; margin-top: 4px;">
+                            Generate a WordPress Application Password under <strong>Users &rarr; Profile</strong> and enter it in the Pixel 9 app settings.
+                        </div>
+                    </div>
+                    <a href="<?php echo esc_url(admin_url('profile.php#application-passwords-section')); ?>" class="button button-secondary button-small">Open Application Passwords &rarr;</a>
+                </div>
+
                 <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 24px; margin-bottom: 24px;">
                     <!-- Add New Project / Visited Location Form -->
                     <div style="border: 1px solid #dcdcde; border-radius: 6px; padding: 18px; background: #fafafa;">
                         <h3 style="margin-top: 0; color: #1F497D;">Add 2027+ Project, Quote Address, or Pick-Up Counter</h3>
-                        <p style="font-size: 12px; color: #50575e; margin-top: 0;">Add new build sites or client estimate addresses anytime during the year. Click <strong>Edit</strong> on any row below to update keywords or categories inline.</p>
+                        <p style="font-size: 12px; color: #50575e; margin-top: 0;">Add new build sites or client estimate addresses anytime during the year (or pin them with 1 tap from your Pixel 9 / Android Auto screen). Click <strong>Edit</strong> on any row below to update inline.</p>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                             <div>
                                 <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 4px;">Clean Display Name</label>
@@ -471,11 +1226,11 @@ function tig_mileage_tracker_admin_page() {
                         <h3 style="margin-top: 0; color: #1F497D;">Physical Odometer Anchors</h3>
                         <p style="font-size: 12px; color: #50575e; margin-top: 0;">Verified dash readings used to chain trip odometers:</p>
                         <div style="font-size: 12px; margin-bottom: 8px;">
-                            <strong>2026 Pivot (Nov 10):</strong>
+                            <strong>2026 Pivot (<?php echo esc_html($anchors['2026']['date'] ?? '2026-11-10'); ?>):</strong>
                             <input type="number" step="0.1" id="anchor-2026-odo" value="<?php echo esc_attr($anchors['2026']['odo']); ?>" style="width: 100px; margin-left: 6px;" /> km
                         </div>
                         <div style="font-size: 12px; margin-bottom: 12px;">
-                            <strong>2027 Start (Jan 1):</strong>
+                            <strong>2027 Anchor (<?php echo esc_html($anchors['2027']['date'] ?? '2027-01-01'); ?>):</strong>
                             <input type="number" step="0.1" id="anchor-2027-odo" value="<?php echo esc_attr($anchors['2027']['odo']); ?>" style="width: 100px; margin-left: 6px;" /> km
                         </div>
                         <button type="button" id="btn-save-anchors" class="button">Update Anchors</button>
@@ -527,6 +1282,7 @@ function tig_mileage_tracker_admin_page() {
         const AJAX_URL = <?php echo wp_json_encode($ajax_url); ?>;
         const NONCE = <?php echo wp_json_encode($nonce); ?>;
         const PLUGIN_VERSION = <?php echo wp_json_encode(TIG_MILEAGE_VERSION); ?>;
+        const LIVE_COUNTS = <?php echo wp_json_encode($live_counts); ?>;
         let geoCache = <?php echo wp_json_encode($geo_cache); ?> || {};
         let customLocations = <?php echo wp_json_encode($locations); ?> || [];
         let odoAnchors = <?php echo wp_json_encode($anchors); ?> || {};
@@ -594,6 +1350,16 @@ function tig_mileage_tracker_admin_page() {
             if (toastTimer) clearTimeout(toastTimer);
             toastTimer = setTimeout(() => { el.style.display = 'none'; }, 5000);
         }
+
+        function updateLiveSourceBadge() {
+            const yr = document.getElementById('select-year').value;
+            const cnt = LIVE_COUNTS[yr] || 0;
+            const sub = document.getElementById('live-source-subtitle');
+            if (sub) {
+                sub.innerHTML = `<strong>${cnt}</strong> live drive${cnt === 1 ? '' : 's'} stored for <strong>${yr}</strong> from Uconnect BT / Android Auto.`;
+            }
+        }
+        updateLiveSourceBadge();
 
         // Tab Switching
         document.querySelectorAll('.tig-tab-btn').forEach(btn => {
@@ -821,7 +1587,6 @@ function tig_mileage_tracker_admin_page() {
                         throw new Error('JSON root must be an object.');
                     }
 
-                    // Detect Full Backup Bundle vs Legacy Raw geo_cache.json
                     const isFullBundle = (parsed.plugin === 'tig-mileage-tracker') ||
                         Array.isArray(parsed.locations) ||
                         (parsed.geoCache && typeof parsed.geoCache === 'object');
@@ -855,7 +1620,7 @@ function tig_mileage_tracker_admin_page() {
                             });
                             if (resp.ok) {
                                 const cnt = Object.keys(geoCache).length;
-                                document.getElementById('status-cache').innerHTML = `&#10003; ${cnt} coordinates auto-loaded &amp; saved permanently`;
+                                document.getElementById('status-cache').innerHTML = `&#10003; ${cnt} coordinates loaded &amp; saved permanently`;
                                 restoredParts.push(`${Object.keys(parsed.geoCache).length} cached coordinates`);
                             }
                         }
@@ -863,7 +1628,6 @@ function tig_mileage_tracker_admin_page() {
                         showSaveToast(`✓ Restored ${restoredParts.join(', ')}`);
                         alert(`Full backup restored: ${restoredParts.join(', ')}.`);
                     } else {
-                        // Legacy raw geo_cache.json dictionary
                         Object.assign(geoCache, parsed);
                         const resp = await fetch(AJAX_URL, {
                             method: 'POST',
@@ -878,7 +1642,7 @@ function tig_mileage_tracker_admin_page() {
                         const data = await resp.json();
                         if (!data || !data.success) throw new Error('Server rejected cache save');
                         const cnt = Object.keys(geoCache).length;
-                        document.getElementById('status-cache').innerHTML = `&#10003; ${cnt} coordinates auto-loaded &amp; saved permanently`;
+                        document.getElementById('status-cache').innerHTML = `&#10003; ${cnt} coordinates loaded &amp; saved permanently`;
                         showSaveToast(`✓ Imported ${Object.keys(parsed).length} coordinates`);
                         alert(`Imported ${Object.keys(parsed).length} locations into permanent plugin cache.`);
                     }
@@ -966,7 +1730,6 @@ function tig_mileage_tracker_admin_page() {
             return [null, null];
         }
 
-        // Normalize both Android semanticSegments and iOS / Takeout timelineObjects schemas
         function extractNormalizedSegments(raw) {
             const out = [];
             const modernList = Array.isArray(raw) ? raw : (Array.isArray(raw.semanticSegments) ? raw.semanticSegments : []);
@@ -1015,14 +1778,12 @@ function tig_mileage_tracker_admin_page() {
             if (OUT_OF_REGION.some(c => aNorm.includes(c))) {
                 return [addr, 'Personal', 'Out of Region'];
             }
-            // Home Depot YMCA weekday vs weekend rule
             if (aNorm.includes('ymca')) {
                 if (day === 'Saturday' || day === 'Sunday') {
                     return ['YMCA Drive (Fit4Less)', 'Personal', 'Gym / Personal'];
                 }
                 return ['Home Depot (20 YMCA Dr, St. Catharines)', 'Materials / Supplies', 'Home Depot - St. Catharines'];
             }
-            // Match against user-managed Locations & Projects table
             for (const loc of customLocations) {
                 if (loc.year !== 'ALL' && loc.year !== year) continue;
                 const kwList = loc.keywords
@@ -1053,7 +1814,6 @@ function tig_mileage_tracker_admin_page() {
             return null;
         }
 
-        // Detect route continuity gaps where Trip N+1 Origin differs from Trip N Destination
         function detectRouteContinuityGaps(trips) {
             const gaps = [];
             for (let i = 0; i < trips.length; i++) {
@@ -1080,6 +1840,53 @@ function tig_mileage_tracker_admin_page() {
             return gaps;
         }
 
+        function chainOdometers(deduped, targetYear) {
+            const anchorCfg = odoAnchors[targetYear] || { date: `${targetYear}-01-01`, odo: 136111.0, mode: 'forward' };
+            if (!deduped.length) return;
+
+            if (anchorCfg.mode === 'pivot') {
+                let anchorIdx = -1;
+                for (let i = 0; i < deduped.length; i++) {
+                    if (deduped[i].Date <= anchorCfg.date) anchorIdx = i;
+                }
+                if (anchorIdx >= 0) {
+                    let cur = parseFloat(anchorCfg.odo);
+                    for (let i = anchorIdx; i >= 0; i--) {
+                        deduped[i].OdoEnd = Math.round(cur * 10) / 10;
+                        cur -= deduped[i].Distance;
+                        deduped[i].OdoStart = Math.round(cur * 10) / 10;
+                    }
+                    cur = parseFloat(anchorCfg.odo);
+                    for (let i = anchorIdx + 1; i < deduped.length; i++) {
+                        deduped[i].OdoStart = Math.round(cur * 10) / 10;
+                        cur += deduped[i].Distance;
+                        deduped[i].OdoEnd = Math.round(cur * 10) / 10;
+                    }
+                } else {
+                    let cur = parseFloat(anchorCfg.odo);
+                    for (let i = 0; i < deduped.length; i++) {
+                        deduped[i].OdoStart = Math.round(cur * 10) / 10;
+                        cur += deduped[i].Distance;
+                        deduped[i].OdoEnd = Math.round(cur * 10) / 10;
+                    }
+                }
+            } else if (anchorCfg.mode === 'backward') {
+                let cur = parseFloat(anchorCfg.odo);
+                for (let i = deduped.length - 1; i >= 0; i--) {
+                    deduped[i].OdoEnd = Math.round(cur * 10) / 10;
+                    cur -= deduped[i].Distance;
+                    deduped[i].OdoStart = Math.round(cur * 10) / 10;
+                }
+            } else {
+                let cur = parseFloat(anchorCfg.odo);
+                for (let i = 0; i < deduped.length; i++) {
+                    deduped[i].OdoStart = Math.round(cur * 10) / 10;
+                    cur += deduped[i].Distance;
+                    deduped[i].OdoEnd = Math.round(cur * 10) / 10;
+                }
+            }
+        }
+
         function setProgress(pct, text) {
             document.getElementById('progress-wrap').style.display = 'block';
             document.getElementById('progress-bar').style.width = pct + '%';
@@ -1096,7 +1903,6 @@ function tig_mileage_tracker_admin_page() {
             document.getElementById('kpi-biz-km').innerText = bizKm.toFixed(2);
             document.getElementById('kpi-biz-pct').innerText = bizPct.toFixed(2) + '%';
 
-            // Continuity Badge & Table
             const gaps = detectRouteContinuityGaps(processedTrips);
             const badge = document.getElementById('continuity-badge');
             const gapsSec = document.getElementById('gaps-section');
@@ -1133,7 +1939,6 @@ function tig_mileage_tracker_admin_page() {
                 gapsSec.style.display = 'none';
             }
 
-            // Quick Review Queue
             const reviewRows = processedTrips.map((r, i) => ({ r, i })).filter(x => x.r.Purpose === 'Review');
             const revSec = document.getElementById('review-section');
             if (reviewRows.length > 0) {
@@ -1182,6 +1987,196 @@ function tig_mileage_tracker_admin_page() {
         document.getElementById('box-timeline').addEventListener('click', () => document.getElementById('input-timeline').click());
         document.getElementById('select-year').addEventListener('change', function() {
             document.getElementById('btn-download-label').innerText = `Download ${this.value} CRA-Ready Logbook (.xlsx)`;
+            updateLiveSourceBadge();
+        });
+
+        // Source A: Load Live Pixel 9 / Android Auto Trips from WordPress DB
+        async function fetchLiveTripsForYear(targetYear) {
+            const resp = await fetch(AJAX_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    action: 'tig_live_trips_action',
+                    security: NONCE,
+                    op: 'list',
+                    year: targetYear
+                })
+            });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            if (!data || !data.success) throw new Error((data && data.data) ? data.data : 'Failed to load live trips');
+            return data.data.trips || [];
+        }
+
+        document.getElementById('btn-load-live-trips').addEventListener('click', async function() {
+            const targetYear = document.getElementById('select-year').value;
+            setProgress(30, `Fetching live Pixel 9 drives for ${targetYear}...`);
+            try {
+                const liveRows = await fetchLiveTripsForYear(targetYear);
+                if (!liveRows.length) {
+                    setProgress(100, `No live Pixel 9 trips found for ${targetYear} yet.`);
+                    document.getElementById('progress-bar').style.background = '#d97706';
+                    return;
+                }
+
+                setProgress(70, 'Classifying endpoints, matching QBO receipts & chaining odometers...');
+                const deduped = [];
+                for (const t of liveRows) {
+                    const [origClean] = classifyEndpoint(t.origin_raw || t.origin, t.day, targetYear);
+                    let [destClean, purpose, category] = classifyEndpoint(t.dest_raw || t.destination, t.day, targetYear);
+                    let qboNote = '';
+
+                    if (['Personal', 'ZEHRS', 'Fit4Less', 'Out of Region'].some(k => origClean.includes(k)) &&
+                        purpose === 'Return to Head Office / Dispatch') {
+                        purpose = 'Personal';
+                        category = 'Return from Personal';
+                    }
+
+                    if (t.manual_purpose) {
+                        purpose = t.manual_purpose;
+                        category = t.manual_category || (purpose === 'Personal' ? 'Personal (Pixel)' : purpose);
+                    }
+
+                    if (purpose === 'Review' || SUPPLIER_PURPOSES.includes(purpose)) {
+                        const matchedTx = matchQboForTrip(t.date, destClean, category, purpose);
+                        if (matchedTx) {
+                            qboNote = `QBO Receipt: $${matchedTx.amt.toFixed(2)} (${matchedTx.name})`;
+                            if (purpose === 'Review') {
+                                purpose = 'Materials / Supplies';
+                                category = `QBO Verified: ${matchedTx.name}`;
+                            }
+                        }
+                    }
+
+                    deduped.push({
+                        Date: t.date,
+                        Day: t.day,
+                        Departure: t.departure,
+                        Arrival: t.arrival,
+                        Origin: origClean,
+                        Destination: destClean,
+                        Distance: parseFloat(t.gps_km) || 0,
+                        OdoStart: 0,
+                        OdoEnd: 0,
+                        Purpose: purpose,
+                        Category: category,
+                        QBO: qboNote,
+                        Continuity: 'OK'
+                    });
+                }
+
+                const destCounts = {};
+                deduped.forEach(r => { destCounts[r.Destination] = (destCounts[r.Destination] || 0) + 1; });
+                deduped.forEach(r => {
+                    if (r.Purpose === 'Review' && destCounts[r.Destination] === 1) {
+                        r.Purpose = 'Quote / Estimate';
+                        r.Category = 'Prospective Project';
+                    }
+                });
+
+                chainOdometers(deduped, targetYear);
+                processedTrips = deduped;
+                refreshSummaryAndReview();
+
+                setProgress(100, 'Live Pixel 9 Trips Loaded');
+                document.getElementById('progress-bar').style.background = '#2e7d32';
+                document.getElementById('status-timeline').innerHTML = `<span style="color:#2e7d32;">&#10003; Loaded ${deduped.length} live Pixel 9 trips for ${targetYear}</span>`;
+                const btn = document.getElementById('btn-download-xlsx');
+                btn.disabled = false;
+                btn.style.opacity = '1';
+            } catch (err) {
+                alert('Error loading live Pixel 9 trips: ' + err.message);
+            }
+        });
+
+        async function renderLiveManagerTable() {
+            const targetYear = document.getElementById('select-year').value;
+            document.getElementById('live-mgr-year').innerText = targetYear;
+            const tbody = document.getElementById('live-mgr-tbody');
+            tbody.innerHTML = '<tr><td colspan="6">Loading stored trips...</td></tr>';
+
+            try {
+                const rows = await fetchLiveTripsForYear(targetYear);
+                if (!rows.length) {
+                    tbody.innerHTML = `<tr><td colspan="6">No live Pixel 9 drives recorded for ${escapeHtml(targetYear)} yet.</td></tr>`;
+                    return;
+                }
+                tbody.innerHTML = '';
+                rows.forEach(r => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${escapeHtml(r.date)}<br><small>${escapeHtml(r.departure)} &ndash; ${escapeHtml(r.arrival)}</small></td>
+                        <td><span style="font-size:11px; background:#eef4fb; padding:2px 6px; border-radius:3px;">${escapeHtml(r.trigger_source)}</span></td>
+                        <td><small>${escapeHtml(r.origin)}</small><br>&rarr; <strong>${escapeHtml(r.destination)}</strong></td>
+                        <td>${Number(r.gps_km).toFixed(2)}</td>
+                        <td>
+                            <select class="tig-live-purpose" data-id="${r.id}" style="font-size:12px;">
+                                ${buildSelectOptions(PURPOSE_OPTIONS.concat(['Review']), r.purpose)}
+                            </select>
+                        </td>
+                        <td>
+                            <button type="button" class="button button-small tig-live-del" data-id="${r.id}" style="color:#b32d2e;">Delete</button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+                document.querySelectorAll('.tig-live-purpose').forEach(sel => {
+                    sel.addEventListener('change', async function() {
+                        const id = this.dataset.id;
+                        const val = this.value === 'Review' ? '' : this.value;
+                        await fetch(AJAX_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: new URLSearchParams({
+                                action: 'tig_live_trips_action',
+                                security: NONCE,
+                                op: 'update',
+                                id: id,
+                                purpose: val,
+                                category: val === 'Personal' ? 'Personal (Admin)' : val
+                            })
+                        });
+                        showSaveToast('✓ Live trip purpose updated');
+                    });
+                });
+
+                document.querySelectorAll('.tig-live-del').forEach(btn => {
+                    btn.addEventListener('click', async function() {
+                        if (!confirm('Delete this stored Pixel 9 trip?')) return;
+                        const id = this.dataset.id;
+                        await fetch(AJAX_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: new URLSearchParams({
+                                action: 'tig_live_trips_action',
+                                security: NONCE,
+                                op: 'delete',
+                                id: id
+                            })
+                        });
+                        LIVE_COUNTS[targetYear] = Math.max(0, (LIVE_COUNTS[targetYear] || 1) - 1);
+                        updateLiveSourceBadge();
+                        renderLiveManagerTable();
+                        showSaveToast('✓ Live trip removed');
+                    });
+                });
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="6" style="color:#b32d2e;">Error: ${escapeHtml(err.message)}</td></tr>`;
+            }
+        }
+
+        document.getElementById('btn-toggle-live-manager').addEventListener('click', function() {
+            const sec = document.getElementById('live-manager-section');
+            if (sec.style.display === 'none') {
+                sec.style.display = 'block';
+                renderLiveManagerTable();
+            } else {
+                sec.style.display = 'none';
+            }
+        });
+        document.getElementById('btn-close-live-manager').addEventListener('click', () => {
+            document.getElementById('live-manager-section').style.display = 'none';
         });
 
         document.getElementById('input-qbo').addEventListener('change', function(e) {
@@ -1267,6 +2262,7 @@ function tig_mileage_tracker_admin_page() {
             }
         }
 
+        // Source B: Google Timeline JSON Import
         document.getElementById('input-timeline').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -1363,44 +2359,7 @@ function tig_mileage_tracker_admin_page() {
                             }
                         });
 
-                        // Odometer Chaining
-                        const anchorCfg = odoAnchors[targetYear] || { date: `${targetYear}-01-01`, odo: 136111.0, mode: 'forward' };
-                        if (deduped.length > 0) {
-                            if (anchorCfg.mode === 'pivot') {
-                                let anchorIdx = -1;
-                                for (let i = 0; i < deduped.length; i++) {
-                                    if (deduped[i].Date <= anchorCfg.date) anchorIdx = i;
-                                }
-                                if (anchorIdx >= 0) {
-                                    let cur = parseFloat(anchorCfg.odo);
-                                    for (let i = anchorIdx; i >= 0; i--) {
-                                        deduped[i].OdoEnd = Math.round(cur * 10) / 10;
-                                        cur -= deduped[i].Distance;
-                                        deduped[i].OdoStart = Math.round(cur * 10) / 10;
-                                    }
-                                    cur = parseFloat(anchorCfg.odo);
-                                    for (let i = anchorIdx + 1; i < deduped.length; i++) {
-                                        deduped[i].OdoStart = Math.round(cur * 10) / 10;
-                                        cur += deduped[i].Distance;
-                                        deduped[i].OdoEnd = Math.round(cur * 10) / 10;
-                                    }
-                                }
-                            } else if (anchorCfg.mode === 'backward') {
-                                let cur = parseFloat(anchorCfg.odo);
-                                for (let i = deduped.length - 1; i >= 0; i--) {
-                                    deduped[i].OdoEnd = Math.round(cur * 10) / 10;
-                                    cur -= deduped[i].Distance;
-                                    deduped[i].OdoStart = Math.round(cur * 10) / 10;
-                                }
-                            } else {
-                                let cur = parseFloat(anchorCfg.odo);
-                                for (let i = 0; i < deduped.length; i++) {
-                                    deduped[i].OdoStart = Math.round(cur * 10) / 10;
-                                    cur += deduped[i].Distance;
-                                    deduped[i].OdoEnd = Math.round(cur * 10) / 10;
-                                }
-                            }
-                        }
+                        chainOdometers(deduped, targetYear);
 
                         processedTrips = deduped;
                         refreshSummaryAndReview();
@@ -1461,7 +2420,6 @@ function tig_mileage_tracker_admin_page() {
                 ['Month', 'Trips Logged', 'Total KM', 'Commercial KM (Deductible)', 'Personal KM (Non-Deductible)', 'Commercial %']
             ];
 
-            // Rows 5..16 (1-indexed Excel rows 5..16) correspond to Jan..Dec
             MONTH_LABELS.forEach(([mm, label], idx) => {
                 const excelRow = 5 + idx;
                 const prefix = `${targetYear}-${mm}`;
@@ -1481,7 +2439,6 @@ function tig_mileage_tracker_admin_page() {
                 ]);
             });
 
-            // Row 17: Full-Year Total
             rows.push([
                 `TOTAL ${targetYear}`,
                 { t: 'n', v: totals.n, f: 'SUM(B5:B16)', z: '#,##0' },
@@ -1491,7 +2448,6 @@ function tig_mileage_tracker_admin_page() {
                 { t: 'n', v: totals.bizRatio, f: 'IF(C17>0,D17/C17,0)', z: '0.00%' }
             ]);
 
-            // Row 18 blank, Row 19 header, Rows 20..23 Quarters
             rows.push([]);
             rows.push(['Quarterly HST ITC Rollup', 'Trips Logged', 'Total KM', 'Commercial KM (Deductible)', 'Personal KM (Non-Deductible)', 'Commercial %']);
 

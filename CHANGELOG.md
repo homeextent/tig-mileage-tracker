@@ -2,6 +2,12 @@
 
 All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPress plugin are documented here.
 
+## [3.3.0] - 2026-11-12
+### Added
+- **WordPress REST API (`/wp-json/tig-mileage/v1/`):** Added `GET /status`, `POST /trips`, `PATCH /trips/{id}`, `POST /locations` (1-tap GPS site pinning), and `POST /anchors` (odometer check-ins with WordPress Media Library cluster photo upload), secured via WordPress Application Passwords with SiteGround `HTTP_AUTHORIZATION` / `X-TIG-Auth` header fallback.
+- **Live Pixel 9 / Android Auto Storage (`wp_tig_mileage_trips`):** Custom MySQL table with idempotent `trip_uid` deduplication and automatic server-side reverse-geocoding + CRA endpoint classification for instant phone & Uconnect notifications.
+- **Dual-Source Logbook Engine (Tab 1):** Added **Load Live Pixel 9 Trips** alongside **Drop Google Timeline (.json)** plus a live trip inspector/editor, feeding into the existing QBO matcher, odometer chain, Route Continuity detector, and 3-tab `.xlsx` exporter.
+
 ## [3.2.0] - 2026-11-12
 ### Added
 - Inline rule editing, live search, and tax-year filtering (`All Rules`, `ALL`, `2027`, `2026`, `2025`) in Tab 2 (*Projects, Suppliers & Odometer Anchors*).
