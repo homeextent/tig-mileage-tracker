@@ -2,6 +2,12 @@
 
 All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPress plugin are documented here.
 
+## [3.2.0] - 2026-11-12
+### Added
+- Inline rule editing, live search, and tax-year filtering (`All Rules`, `ALL`, `2027`, `2026`, `2025`) in Tab 2 (*Projects, Suppliers & Odometer Anchors*).
+- Full Rulebook, Odometer Anchor & Geo-Cache JSON backup/restore (`tig-mileage-full-backup-YYYY-MM-DD.json`) with backwards compatibility for raw `geo_cache.json` files.
+- Route Continuity & Gap Detector flagging legs where `Origin` differs from the prior trip's `Destination` in both the admin UI and Column M (`Route Continuity`) of the exported logbook.
+- `Monthly Summary` Excel sheet (`Jan`–`Dec` plus `Q1`–`Q4` Quarterly HST ITC Rollup) with live `COUNTIF`, `SUMIF`, and `SUMIFS` formulas.
 
 ## [3.1.0] - 2026-11-12
 ### Fixed

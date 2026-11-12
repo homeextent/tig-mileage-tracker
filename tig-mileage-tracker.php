@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
  * Description: Client-side CRA-compliant mileage engine for Homeextent Inc. (2019 Ram 1500 Rebel). Auto-loads bundled geo_cache.json, manages multi-year projects/suppliers in WP Admin, corroborates QBO receipts, and exports CPA-ready Excel workbooks.
- * Version: 3.1.0
+ * Version: 3.2.0
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.1.0');
+define('TIG_MILEAGE_VERSION', '3.2.0');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
 
 // Register top-level admin menu
@@ -27,14 +27,14 @@ function tig_mileage_tracker_menu() {
     );
 }
 
-// Redirect legacy slugs cleanly & run one-time v3.1.0 keyword cleanup migration
+// Redirect legacy slugs cleanly & run schema migrations
 add_action('admin_init', 'tig_mileage_admin_init');
 function tig_mileage_admin_init() {
     if (!is_admin()) {
         return;
     }
 
-    tig_mileage_maybe_migrate_v310();
+    tig_mileage_maybe_migrate();
 
     if (!isset($_GET['page'])) {
         return;
@@ -61,46 +61,47 @@ function tig_mileage_sanitize_keywords($raw_keywords) {
     return implode(', ', $clean);
 }
 
-// One-time safe migration for sites upgrading from v3.0.x with legacy comma-split tokens in wp_options
-function tig_mileage_maybe_migrate_v310() {
+// Safe upgrade migration preserving user-added rules while cleaning legacy v3.0.x comma-split tokens
+function tig_mileage_maybe_migrate() {
     $db_ver = get_option('tig_mileage_db_version', '');
     if ($db_ver === TIG_MILEAGE_VERSION) {
         return;
     }
 
-    $locations = get_option('tig_mileage_locations');
-    if (is_array($locations) && !empty($locations)) {
-        $updated = false;
-        foreach ($locations as &$loc) {
-            if (!isset($loc['keywords'])) {
-                continue;
-            }
-            $orig_kw = $loc['keywords'];
-            $cleaned = tig_mileage_sanitize_keywords($orig_kw);
+    if ($db_ver === '' || version_compare($db_ver, '3.1.0', '<')) {
+        $locations = get_option('tig_mileage_locations');
+        if (is_array($locations) && !empty($locations)) {
+            $updated = false;
+            foreach ($locations as &$loc) {
+                if (!isset($loc['keywords'])) {
+                    continue;
+                }
+                $orig_kw = $loc['keywords'];
+                $cleaned = tig_mileage_sanitize_keywords($orig_kw);
 
-            // Remove overly broad street-only tokens from specific multi-tenant street rules
-            $id = $loc['id'] ?? '';
-            if ($id === 'loc_regdoors') {
-                $tokens = array_filter(array_map('trim', explode(',', $cleaned)), function ($t) {
-                    return $t !== 'scott';
-                });
-                $cleaned = implode(', ', $tokens);
-            } elseif ($id === 'loc_a1floor' || $id === 'loc_goemans') {
-                $tokens = array_filter(array_map('trim', explode(',', $cleaned)), function ($t) {
-                    return $t !== 'bunting';
-                });
-                $cleaned = implode(', ', $tokens);
-            }
+                $id = $loc['id'] ?? '';
+                if ($id === 'loc_regdoors') {
+                    $tokens = array_filter(array_map('trim', explode(',', $cleaned)), function ($t) {
+                        return $t !== 'scott';
+                    });
+                    $cleaned = implode(', ', $tokens);
+                } elseif ($id === 'loc_a1floor' || $id === 'loc_goemans') {
+                    $tokens = array_filter(array_map('trim', explode(',', $cleaned)), function ($t) {
+                        return $t !== 'bunting';
+                    });
+                    $cleaned = implode(', ', $tokens);
+                }
 
-            if ($cleaned !== '' && $cleaned !== $orig_kw) {
-                $loc['keywords'] = $cleaned;
-                $updated = true;
+                if ($cleaned !== '' && $cleaned !== $orig_kw) {
+                    $loc['keywords'] = $cleaned;
+                    $updated = true;
+                }
             }
-        }
-        unset($loc);
+            unset($loc);
 
-        if ($updated) {
-            update_option('tig_mileage_locations', $locations, false);
+            if ($updated) {
+                update_option('tig_mileage_locations', $locations, false);
+            }
         }
     }
 
@@ -250,7 +251,6 @@ function tig_mileage_ajax_save_geocache() {
     update_option('tig_mileage_runtime_geocache', $runtime, false);
     $merged = tig_mileage_load_merged_geocache();
 
-    // Attempt to mirror back to data/geo_cache.json if directory is writable
     $data_dir = TIG_MILEAGE_DIR . 'data';
     if (!file_exists($data_dir)) {
         wp_mkdir_p($data_dir);
@@ -346,7 +346,11 @@ function tig_mileage_tracker_admin_page() {
                     <input type="file" id="input-timeline" accept=".json" style="display: none;" />
                 </div>
 
-                <h3 style="margin-top: 26px; margin-bottom: 12px; color: #1d2327;">Step 3: Audit Summary &amp; Export</h3>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 26px; margin-bottom: 12px;">
+                    <h3 style="margin: 0; color: #1d2327;">Step 3: Audit Summary &amp; Export</h3>
+                    <span id="continuity-badge" style="display: none; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 4px; cursor: pointer;"></span>
+                </div>
+
                 <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 18px;">
                     <div style="border: 1px solid #dcdcde; border-radius: 6px; padding: 14px 16px;">
                         <div style="font-size: 11px; color: #646970; text-transform: uppercase;">Total Trips</div>
@@ -363,6 +367,28 @@ function tig_mileage_tracker_admin_page() {
                     <div style="border: 1px solid #c3e6cb; background: #f2fbf4; border-radius: 6px; padding: 14px 16px;">
                         <div style="font-size: 11px; color: #2e7d32; text-transform: uppercase;">Business %</div>
                         <div id="kpi-biz-pct" style="font-size: 22px; font-weight: 700; color: #2e7d32; margin-top: 4px;">0.00%</div>
+                    </div>
+                </div>
+
+                <!-- Route Continuity Gaps Panel (Expandable when gaps exist) -->
+                <div id="gaps-section" style="display: none; margin-bottom: 20px; border: 1px solid #d63638; background: #fcf0f1; border-radius: 6px; padding: 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <strong style="color: #8a2424; font-size: 14px;">Route Continuity Discrepancies (<span id="gaps-count">0</span> Legs)</strong>
+                        <span style="font-size: 12px; color: #50575e;">Trips where Origin differs from the immediately preceding Destination (e.g., GPS dropout or unclassified corner).</span>
+                    </div>
+                    <div style="max-height: 220px; overflow-y: auto; border: 1px solid #e5e5e5; background: #fff;">
+                        <table class="widefat striped" style="border: none;">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Departure</th>
+                                    <th>Prior Stop Destination</th>
+                                    <th>Next Trip Origin</th>
+                                    <th>Next Destination</th>
+                                </tr>
+                            </thead>
+                            <tbody id="gaps-tbody"></tbody>
+                        </table>
                     </div>
                 </div>
 
@@ -399,7 +425,7 @@ function tig_mileage_tracker_admin_page() {
                     <!-- Add New Project / Visited Location Form -->
                     <div style="border: 1px solid #dcdcde; border-radius: 6px; padding: 18px; background: #fafafa;">
                         <h3 style="margin-top: 0; color: #1F497D;">Add 2027+ Project, Quote Address, or Pick-Up Counter</h3>
-                        <p style="font-size: 12px; color: #50575e; margin-top: 0;">Add new build sites or client estimate addresses anytime during the year. When you run Timeline.json, matching stops are automatically classified.</p>
+                        <p style="font-size: 12px; color: #50575e; margin-top: 0;">Add new build sites or client estimate addresses anytime during the year. Click <strong>Edit</strong> on any row below to update keywords or categories inline.</p>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                             <div>
                                 <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 4px;">Clean Display Name</label>
@@ -440,7 +466,7 @@ function tig_mileage_tracker_admin_page() {
                         <button type="button" id="btn-add-location" class="button button-primary" style="margin-top: 14px;">+ Save Location to Rulebook</button>
                     </div>
 
-                    <!-- Odometer Anchors & Cache Backup -->
+                    <!-- Odometer Anchors & Full Backup -->
                     <div style="border: 1px solid #dcdcde; border-radius: 6px; padding: 18px; background: #fafafa;">
                         <h3 style="margin-top: 0; color: #1F497D;">Physical Odometer Anchors</h3>
                         <p style="font-size: 12px; color: #50575e; margin-top: 0;">Verified dash readings used to chain trip odometers:</p>
@@ -455,25 +481,38 @@ function tig_mileage_tracker_admin_page() {
                         <button type="button" id="btn-save-anchors" class="button">Update Anchors</button>
 
                         <hr style="margin: 16px 0;" />
-                        <strong style="font-size: 12px; display: block; margin-bottom: 6px;">Geo-Cache Backup / Import</strong>
-                        <div style="display: flex; gap: 8px;">
-                            <button type="button" id="btn-import-cache-tab2" class="button button-small">Import geo_cache.json</button>
-                            <button type="button" id="btn-export-cache-tab2" class="button button-small">Download Cache</button>
-                            <input type="file" id="input-cache-tab2" accept=".json" style="display: none;" />
+                        <strong style="font-size: 12px; display: block; margin-bottom: 6px;">Full Rulebook &amp; Geo-Cache Backup</strong>
+                        <p style="font-size: 11px; color: #646970; margin: 0 0 8px 0;">Exports or restores all location rules, odometer anchors, and cached GPS coordinates in one JSON file.</p>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button type="button" id="btn-export-full-backup" class="button button-small">Download Full Backup (.json)</button>
+                            <button type="button" id="btn-import-full-backup" class="button button-small">Restore Backup / Cache</button>
+                            <input type="file" id="input-full-backup" accept=".json" style="display: none;" />
                         </div>
                     </div>
                 </div>
 
-                <h3 style="color: #1d2327;">Active Project Sites &amp; Approved Pick-Up Counters (<span id="loc-total-count"><?php echo count($locations); ?></span>)</h3>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 12px; flex-wrap: wrap;">
+                    <h3 style="margin: 0; color: #1d2327;">Active Project Sites &amp; Approved Pick-Up Counters (<span id="loc-visible-count"><?php echo count($locations); ?></span> of <span id="loc-total-count"><?php echo count($locations); ?></span>)</h3>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="search" id="filter-loc-search" placeholder="Search name, keyword, or category..." style="width: 240px; font-size: 12px;" />
+                        <select id="filter-loc-year" style="font-size: 12px;">
+                            <option value="FILTER_ALL_RULES">All Rules</option>
+                            <option value="ALL">Multi-Year (ALL)</option>
+                            <option value="2027">2027 Only</option>
+                            <option value="2026">2026 Only</option>
+                            <option value="2025">2025 Only</option>
+                        </select>
+                    </div>
+                </div>
                 <table class="widefat striped">
                     <thead>
                         <tr>
-                            <th>Tax Year</th>
+                            <th style="width: 90px;">Tax Year</th>
                             <th>Clean Display Name</th>
                             <th>Match Keywords</th>
-                            <th>CRA Purpose</th>
+                            <th style="width: 185px;">CRA Purpose</th>
                             <th>Category</th>
-                            <th style="width: 70px;">Action</th>
+                            <th style="width: 135px;">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="locations-tbody"></tbody>
@@ -487,11 +526,24 @@ function tig_mileage_tracker_admin_page() {
     (function() {
         const AJAX_URL = <?php echo wp_json_encode($ajax_url); ?>;
         const NONCE = <?php echo wp_json_encode($nonce); ?>;
+        const PLUGIN_VERSION = <?php echo wp_json_encode(TIG_MILEAGE_VERSION); ?>;
         let geoCache = <?php echo wp_json_encode($geo_cache); ?> || {};
         let customLocations = <?php echo wp_json_encode($locations); ?> || [];
         let odoAnchors = <?php echo wp_json_encode($anchors); ?> || {};
         let txByDate = {};
         let processedTrips = [];
+        let editingLocIndex = -1;
+
+        const PURPOSE_OPTIONS = [
+            'Project Site Visit',
+            'Project Development',
+            'Materials / Supplies',
+            'Quote / Estimate',
+            'Tools / Repair',
+            'Vehicle Maintenance & Parts',
+            'Return to Head Office / Dispatch',
+            'Personal'
+        ];
 
         const OUT_OF_REGION = [
             'burlington', 'clarington', 'cobourg', 'cramahe', 'dunnville',
@@ -513,6 +565,22 @@ function tig_mileage_tracker_admin_page() {
             'Tools / Repair',
             'Vehicle Maintenance & Parts'
         ];
+
+        const MONTH_LABELS = [
+            ['01', 'January'], ['02', 'February'], ['03', 'March'],
+            ['04', 'April'], ['05', 'May'], ['06', 'June'],
+            ['07', 'July'], ['08', 'August'], ['09', 'September'],
+            ['10', 'October'], ['11', 'November'], ['12', 'December']
+        ];
+
+        function escapeHtml(str) {
+            return String(str === undefined || str === null ? '' : str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
 
         let toastTimer = null;
         function showSaveToast(message, isError = false) {
@@ -541,31 +609,120 @@ function tig_mileage_tracker_admin_page() {
             });
         });
 
+        function buildSelectOptions(optionsList, selectedVal) {
+            return optionsList.map(opt => {
+                const sel = opt === selectedVal ? ' selected' : '';
+                return `<option value="${escapeHtml(opt)}"${sel}>${escapeHtml(opt)}</option>`;
+            }).join('');
+        }
+
         function renderLocationsTable() {
             const tbody = document.getElementById('locations-tbody');
+            const searchQ = (document.getElementById('filter-loc-search').value || '').trim().toLowerCase();
+            const yearFilter = document.getElementById('filter-loc-year').value;
+
             tbody.innerHTML = '';
             document.getElementById('loc-total-count').innerText = customLocations.length;
+            let visibleCount = 0;
+
             customLocations.forEach((loc, idx) => {
+                if (yearFilter !== 'FILTER_ALL_RULES' && loc.year !== yearFilter) {
+                    return;
+                }
+                if (searchQ) {
+                    const hay = `${loc.name} ${loc.keywords} ${loc.purpose} ${loc.category} ${loc.year}`.toLowerCase();
+                    if (!hay.includes(searchQ)) return;
+                }
+
+                visibleCount++;
                 const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td><strong>${loc.year}</strong></td>
-                    <td>${loc.name}</td>
-                    <td><code style="font-size:11px;">${loc.keywords}</code></td>
-                    <td>${loc.purpose}</td>
-                    <td>${loc.category}</td>
-                    <td><button type="button" class="button button-small tig-del-loc" data-idx="${idx}" style="color:#b32d2e;">Delete</button></td>
-                `;
+
+                if (editingLocIndex === idx) {
+                    const yrOpts = ['ALL', '2027', '2026', '2025'].map(y =>
+                        `<option value="${y}"${loc.year === y ? ' selected' : ''}>${y}</option>`
+                    ).join('');
+                    tr.style.background = '#fffdf5';
+                    tr.innerHTML = `
+                        <td><select class="tig-edit-year" style="width:100%; font-size:12px;">${yrOpts}</select></td>
+                        <td><input type="text" class="tig-edit-name" value="${escapeHtml(loc.name)}" style="width:100%; font-size:12px;" /></td>
+                        <td><input type="text" class="tig-edit-keywords" value="${escapeHtml(loc.keywords)}" style="width:100%; font-size:12px;" /></td>
+                        <td><select class="tig-edit-purpose" style="width:100%; font-size:12px;">${buildSelectOptions(PURPOSE_OPTIONS, loc.purpose)}</select></td>
+                        <td><input type="text" class="tig-edit-category" value="${escapeHtml(loc.category)}" style="width:100%; font-size:12px;" /></td>
+                        <td style="white-space:nowrap;">
+                            <button type="button" class="button button-primary button-small tig-save-loc" data-idx="${idx}">Save</button>
+                            <button type="button" class="button button-small tig-cancel-loc">Cancel</button>
+                        </td>
+                    `;
+                } else {
+                    tr.innerHTML = `
+                        <td><strong>${escapeHtml(loc.year)}</strong></td>
+                        <td>${escapeHtml(loc.name)}</td>
+                        <td><code style="font-size:11px;">${escapeHtml(loc.keywords)}</code></td>
+                        <td>${escapeHtml(loc.purpose)}</td>
+                        <td>${escapeHtml(loc.category)}</td>
+                        <td style="white-space:nowrap;">
+                            <button type="button" class="button button-small tig-edit-loc" data-idx="${idx}">Edit</button>
+                            <button type="button" class="button button-small tig-del-loc" data-idx="${idx}" style="color:#b32d2e;">Delete</button>
+                        </td>
+                    `;
+                }
                 tbody.appendChild(tr);
             });
+
+            document.getElementById('loc-visible-count').innerText = visibleCount;
+
+            document.querySelectorAll('.tig-edit-loc').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    editingLocIndex = parseInt(this.dataset.idx, 10);
+                    renderLocationsTable();
+                });
+            });
+
+            document.querySelectorAll('.tig-cancel-loc').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    editingLocIndex = -1;
+                    renderLocationsTable();
+                });
+            });
+
+            document.querySelectorAll('.tig-save-loc').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const i = parseInt(this.dataset.idx, 10);
+                    const row = this.closest('tr');
+                    const name = row.querySelector('.tig-edit-name').value.trim();
+                    const keywords = cleanKeywordInput(row.querySelector('.tig-edit-keywords').value);
+                    const purpose = row.querySelector('.tig-edit-purpose').value;
+                    const category = row.querySelector('.tig-edit-category').value.trim() || purpose;
+                    const year = row.querySelector('.tig-edit-year').value;
+
+                    if (!name || !keywords) {
+                        alert('Please enter both a Clean Display Name and valid Street Keywords.');
+                        return;
+                    }
+                    customLocations[i] = {
+                        ...customLocations[i],
+                        name, keywords, purpose, category, year
+                    };
+                    editingLocIndex = -1;
+                    persistSettings();
+                    renderLocationsTable();
+                });
+            });
+
             document.querySelectorAll('.tig-del-loc').forEach(btn => {
                 btn.addEventListener('click', function() {
                     const i = parseInt(this.dataset.idx, 10);
+                    if (!confirm(`Delete rule "${customLocations[i].name}"?`)) return;
                     customLocations.splice(i, 1);
+                    if (editingLocIndex === i) editingLocIndex = -1;
                     persistSettings();
                     renderLocationsTable();
                 });
             });
         }
+
+        document.getElementById('filter-loc-search').addEventListener('input', renderLocationsTable);
+        document.getElementById('filter-loc-year').addEventListener('change', renderLocationsTable);
         renderLocationsTable();
 
         async function persistSettings() {
@@ -616,6 +773,7 @@ function tig_mileage_tracker_admin_page() {
                 id: 'loc_' + Date.now(),
                 name, keywords, purpose, category, year
             });
+            editingLocIndex = -1;
             persistSettings();
             renderLocationsTable();
             document.getElementById('new-loc-name').value = '';
@@ -632,47 +790,106 @@ function tig_mileage_tracker_admin_page() {
             }
         });
 
-        // Cache import/export in Tab 2
-        document.getElementById('btn-import-cache-tab2').addEventListener('click', () => document.getElementById('input-cache-tab2').click());
-        document.getElementById('input-cache-tab2').addEventListener('change', function(e) {
+        // Full Rulebook + Anchors + Geo-Cache Backup & Smart Restore
+        document.getElementById('btn-export-full-backup').addEventListener('click', function() {
+            const today = new Date().toISOString().slice(0, 10);
+            const payload = {
+                plugin: 'tig-mileage-tracker',
+                version: PLUGIN_VERSION,
+                exportedAt: new Date().toISOString(),
+                locations: customLocations,
+                anchors: odoAnchors,
+                geoCache: geoCache
+            };
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `tig-mileage-full-backup-${today}.json`;
+            a.click();
+        });
+
+        document.getElementById('btn-import-full-backup').addEventListener('click', () => document.getElementById('input-full-backup').click());
+        document.getElementById('input-full-backup').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
             const reader = new FileReader();
             reader.onload = async function(ev) {
                 try {
-                    const imported = JSON.parse(ev.target.result);
-                    Object.assign(geoCache, imported);
-                    const resp = await fetch(AJAX_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        body: new URLSearchParams({
-                            action: 'tig_save_geocache',
-                            security: NONCE,
-                            entries: JSON.stringify(imported)
-                        })
-                    });
-                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                    const data = await resp.json();
-                    if (!data || !data.success) throw new Error('Server rejected cache save');
-                    const cnt = Object.keys(geoCache).length;
-                    document.getElementById('status-cache').innerHTML = `&#10003; ${cnt} coordinates auto-loaded &amp; saved permanently`;
-                    showSaveToast(`✓ Imported ${Object.keys(imported).length} coordinates`);
-                    alert(`Imported ${Object.keys(imported).length} locations into permanent plugin cache.`);
+                    const parsed = JSON.parse(ev.target.result);
+                    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                        throw new Error('JSON root must be an object.');
+                    }
+
+                    // Detect Full Backup Bundle vs Legacy Raw geo_cache.json
+                    const isFullBundle = (parsed.plugin === 'tig-mileage-tracker') ||
+                        Array.isArray(parsed.locations) ||
+                        (parsed.geoCache && typeof parsed.geoCache === 'object');
+
+                    if (isFullBundle) {
+                        let restoredParts = [];
+                        if (Array.isArray(parsed.locations) && parsed.locations.length > 0) {
+                            customLocations = parsed.locations;
+                            restoredParts.push(`${customLocations.length} location rules`);
+                        }
+                        if (parsed.anchors && typeof parsed.anchors === 'object') {
+                            odoAnchors = Object.assign({}, odoAnchors, parsed.anchors);
+                            if (odoAnchors['2026']) document.getElementById('anchor-2026-odo').value = odoAnchors['2026'].odo;
+                            if (odoAnchors['2027']) document.getElementById('anchor-2027-odo').value = odoAnchors['2027'].odo;
+                            restoredParts.push('odometer anchors');
+                        }
+                        await persistSettings();
+                        editingLocIndex = -1;
+                        renderLocationsTable();
+
+                        if (parsed.geoCache && typeof parsed.geoCache === 'object') {
+                            Object.assign(geoCache, parsed.geoCache);
+                            const resp = await fetch(AJAX_URL, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                body: new URLSearchParams({
+                                    action: 'tig_save_geocache',
+                                    security: NONCE,
+                                    entries: JSON.stringify(parsed.geoCache)
+                                })
+                            });
+                            if (resp.ok) {
+                                const cnt = Object.keys(geoCache).length;
+                                document.getElementById('status-cache').innerHTML = `&#10003; ${cnt} coordinates auto-loaded &amp; saved permanently`;
+                                restoredParts.push(`${Object.keys(parsed.geoCache).length} cached coordinates`);
+                            }
+                        }
+
+                        showSaveToast(`✓ Restored ${restoredParts.join(', ')}`);
+                        alert(`Full backup restored: ${restoredParts.join(', ')}.`);
+                    } else {
+                        // Legacy raw geo_cache.json dictionary
+                        Object.assign(geoCache, parsed);
+                        const resp = await fetch(AJAX_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: new URLSearchParams({
+                                action: 'tig_save_geocache',
+                                security: NONCE,
+                                entries: JSON.stringify(parsed)
+                            })
+                        });
+                        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                        const data = await resp.json();
+                        if (!data || !data.success) throw new Error('Server rejected cache save');
+                        const cnt = Object.keys(geoCache).length;
+                        document.getElementById('status-cache').innerHTML = `&#10003; ${cnt} coordinates auto-loaded &amp; saved permanently`;
+                        showSaveToast(`✓ Imported ${Object.keys(parsed).length} coordinates`);
+                        alert(`Imported ${Object.keys(parsed).length} locations into permanent plugin cache.`);
+                    }
                 } catch (err) {
-                    showSaveToast('⚠ Cache import failed: ' + err.message, true);
-                    alert('Cache import error: ' + err.message);
+                    showSaveToast('⚠ Backup restore failed: ' + err.message, true);
+                    alert('Restore error: ' + err.message);
+                } finally {
+                    e.target.value = '';
                 }
             };
             reader.readAsText(file);
-        });
-
-        document.getElementById('btn-export-cache-tab2').addEventListener('click', function() {
-            const blob = new Blob([JSON.stringify(geoCache, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'geo_cache.json';
-            a.click();
         });
 
         function isApprovedVendor(name) {
@@ -793,7 +1010,6 @@ function tig_mileage_tracker_admin_page() {
 
         function classifyEndpoint(addr, day, year) {
             const a = String(addr || '').toLowerCase();
-            // Strip Nominatim commas ("38, Scott Street West" -> "38 scott street west")
             const aNorm = a.replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
 
             if (OUT_OF_REGION.some(c => aNorm.includes(c))) {
@@ -837,6 +1053,33 @@ function tig_mileage_tracker_admin_page() {
             return null;
         }
 
+        // Detect route continuity gaps where Trip N+1 Origin differs from Trip N Destination
+        function detectRouteContinuityGaps(trips) {
+            const gaps = [];
+            for (let i = 0; i < trips.length; i++) {
+                if (i === 0) {
+                    trips[i].Continuity = 'OK';
+                    continue;
+                }
+                const prevDest = trips[i - 1].Destination;
+                const curOrig = trips[i].Origin;
+                if (prevDest !== curOrig) {
+                    trips[i].Continuity = `Gap: prior stop was ${prevDest}`;
+                    gaps.push({
+                        index: i,
+                        date: trips[i].Date,
+                        departure: trips[i].Departure,
+                        prevDest: prevDest,
+                        curOrig: curOrig,
+                        curDest: trips[i].Destination
+                    });
+                } else {
+                    trips[i].Continuity = 'OK';
+                }
+            }
+            return gaps;
+        }
+
         function setProgress(pct, text) {
             document.getElementById('progress-wrap').style.display = 'block';
             document.getElementById('progress-bar').style.width = pct + '%';
@@ -853,6 +1096,44 @@ function tig_mileage_tracker_admin_page() {
             document.getElementById('kpi-biz-km').innerText = bizKm.toFixed(2);
             document.getElementById('kpi-biz-pct').innerText = bizPct.toFixed(2) + '%';
 
+            // Continuity Badge & Table
+            const gaps = detectRouteContinuityGaps(processedTrips);
+            const badge = document.getElementById('continuity-badge');
+            const gapsSec = document.getElementById('gaps-section');
+            if (processedTrips.length > 0) {
+                badge.style.display = 'inline-block';
+                if (gaps.length === 0) {
+                    badge.style.background = '#e6f4ea';
+                    badge.style.color = '#1e7e34';
+                    badge.style.border = '1px solid #b7e1cd';
+                    badge.innerText = '✓ Route Continuity: 0 Gaps';
+                    gapsSec.style.display = 'none';
+                } else {
+                    badge.style.background = '#fcf0f1';
+                    badge.style.color = '#8a2424';
+                    badge.style.border = '1px solid #f5c2c7';
+                    badge.innerText = `⚠ ${gaps.length} Route Continuity Gap${gaps.length === 1 ? '' : 's'} (Click to View)`;
+                    document.getElementById('gaps-count').innerText = gaps.length;
+                    const gBody = document.getElementById('gaps-tbody');
+                    gBody.innerHTML = '';
+                    gaps.forEach(g => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td>${escapeHtml(g.date)}</td>
+                            <td>${escapeHtml(g.departure)}</td>
+                            <td>${escapeHtml(g.prevDest)}</td>
+                            <td>${escapeHtml(g.curOrig)}</td>
+                            <td>${escapeHtml(g.curDest)}</td>
+                        `;
+                        gBody.appendChild(tr);
+                    });
+                }
+            } else {
+                badge.style.display = 'none';
+                gapsSec.style.display = 'none';
+            }
+
+            // Quick Review Queue
             const reviewRows = processedTrips.map((r, i) => ({ r, i })).filter(x => x.r.Purpose === 'Review');
             const revSec = document.getElementById('review-section');
             if (reviewRows.length > 0) {
@@ -863,8 +1144,8 @@ function tig_mileage_tracker_admin_page() {
                 reviewRows.forEach(({ r, i }) => {
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
-                        <td>${r.Date}</td>
-                        <td>${r.Destination}</td>
+                        <td>${escapeHtml(r.Date)}</td>
+                        <td>${escapeHtml(r.Destination)}</td>
                         <td>${r.Distance.toFixed(2)}</td>
                         <td>
                             <select class="tig-rev-select" data-idx="${i}" style="font-size:12px;">
@@ -890,6 +1171,12 @@ function tig_mileage_tracker_admin_page() {
                 revSec.style.display = 'none';
             }
         }
+
+        document.getElementById('continuity-badge').addEventListener('click', function() {
+            const gapsSec = document.getElementById('gaps-section');
+            if (document.getElementById('gaps-tbody').children.length === 0) return;
+            gapsSec.style.display = (gapsSec.style.display === 'none') ? 'block' : 'none';
+        });
 
         document.getElementById('box-qbo').addEventListener('click', () => document.getElementById('input-qbo').click());
         document.getElementById('box-timeline').addEventListener('click', () => document.getElementById('input-timeline').click());
@@ -1062,7 +1349,8 @@ function tig_mileage_tracker_admin_page() {
                             deduped.push({
                                 Date: t.Date, Day: t.Day, Departure: t.Departure, Arrival: t.Arrival,
                                 Origin: origClean, Destination: destClean, Distance: t.Distance,
-                                OdoStart: 0, OdoEnd: 0, Purpose: purpose, Category: category, QBO: qboNote
+                                OdoStart: 0, OdoEnd: 0, Purpose: purpose, Category: category, QBO: qboNote,
+                                Continuity: 'OK'
                             });
                         }
 
@@ -1142,7 +1430,7 @@ function tig_mileage_tracker_admin_page() {
         function downloadCsvFallback(targetYear, metrics) {
             const headers = [
                 'Date', 'Day', 'Departure', 'Arrival', 'Origin', 'Destination',
-                'Distance (km)', 'Odo Start', 'Odo End', 'Purpose', 'Category', 'QBO Audit Corroboration'
+                'Distance (km)', 'Odo Start', 'Odo End', 'Purpose', 'Category', 'QBO Audit Corroboration', 'Route Continuity'
             ];
             const lines = [
                 csvEscape(`HOMEEXTENT INC. (o/a THE INNOVATIVE GROUP) — ${targetYear} VEHICLE MILEAGE LOGBOOK`),
@@ -1153,7 +1441,7 @@ function tig_mileage_tracker_admin_page() {
             processedTrips.forEach(r => {
                 lines.push([
                     r.Date, r.Day, r.Departure, r.Arrival, r.Origin, r.Destination,
-                    r.Distance, r.OdoStart, r.OdoEnd, r.Purpose, r.Category, r.QBO
+                    r.Distance, r.OdoStart, r.OdoEnd, r.Purpose, r.Category, r.QBO, r.Continuity
                 ].map(csvEscape).join(','));
             });
             const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
@@ -1163,6 +1451,80 @@ function tig_mileage_tracker_admin_page() {
             a.download = `TIG_Mileage_Logbook_${targetYear}_CRA_Ready.csv`;
             a.click();
             alert('Excel library (SheetJS) was blocked by browser/network; downloaded CRA-ready CSV fallback instead.');
+        }
+
+        function buildMonthlySummarySheet(targetYear, ref, lastRow, totals) {
+            const rows = [
+                [`HOMEEXTENT INC. (o/a THE INNOVATIVE GROUP) — ${targetYear} MONTHLY & QUARTERLY BREAKDOWN`],
+                ['Prepared for Quarterly HST Input Tax Credit (ITC) & Corporate Tax Reconciliation'],
+                [''],
+                ['Month', 'Trips Logged', 'Total KM', 'Commercial KM (Deductible)', 'Personal KM (Non-Deductible)', 'Commercial %']
+            ];
+
+            // Rows 5..16 (1-indexed Excel rows 5..16) correspond to Jan..Dec
+            MONTH_LABELS.forEach(([mm, label], idx) => {
+                const excelRow = 5 + idx;
+                const prefix = `${targetYear}-${mm}`;
+                const mTrips = processedTrips.filter(r => r.Date.startsWith(prefix));
+                const mTotal = Math.round(mTrips.reduce((s, r) => s + r.Distance, 0) * 100) / 100;
+                const mBiz = Math.round(mTrips.filter(r => !r.Purpose.toLowerCase().includes('personal')).reduce((s, r) => s + r.Distance, 0) * 100) / 100;
+                const mPers = Math.round((mTotal - mBiz) * 100) / 100;
+                const mRatio = mTotal > 0 ? mBiz / mTotal : 0;
+
+                rows.push([
+                    `${label} ${targetYear}`,
+                    { t: 'n', v: mTrips.length, f: `COUNTIF(${ref}!$A$2:$A$${lastRow},"${prefix}-*")`, z: '#,##0' },
+                    { t: 'n', v: mTotal, f: `SUMIF(${ref}!$A$2:$A$${lastRow},"${prefix}-*",${ref}!$G$2:$G$${lastRow})`, z: '#,##0.00' },
+                    { t: 'n', v: mBiz, f: `SUMIFS(${ref}!$G$2:$G$${lastRow},${ref}!$A$2:$A$${lastRow},"${prefix}-*",${ref}!$J$2:$J$${lastRow},"<>Personal")`, z: '#,##0.00' },
+                    { t: 'n', v: mPers, f: `SUMIFS(${ref}!$G$2:$G$${lastRow},${ref}!$A$2:$A$${lastRow},"${prefix}-*",${ref}!$J$2:$J$${lastRow},"Personal")`, z: '#,##0.00' },
+                    { t: 'n', v: mRatio, f: `IF(C${excelRow}>0,D${excelRow}/C${excelRow},0)`, z: '0.00%' }
+                ]);
+            });
+
+            // Row 17: Full-Year Total
+            rows.push([
+                `TOTAL ${targetYear}`,
+                { t: 'n', v: totals.n, f: 'SUM(B5:B16)', z: '#,##0' },
+                { t: 'n', v: totals.totalKm, f: 'SUM(C5:C16)', z: '#,##0.00' },
+                { t: 'n', v: totals.bizKm, f: 'SUM(D5:D16)', z: '#,##0.00' },
+                { t: 'n', v: totals.persKm, f: 'SUM(E5:E16)', z: '#,##0.00' },
+                { t: 'n', v: totals.bizRatio, f: 'IF(C17>0,D17/C17,0)', z: '0.00%' }
+            ]);
+
+            // Row 18 blank, Row 19 header, Rows 20..23 Quarters
+            rows.push([]);
+            rows.push(['Quarterly HST ITC Rollup', 'Trips Logged', 'Total KM', 'Commercial KM (Deductible)', 'Personal KM (Non-Deductible)', 'Commercial %']);
+
+            const quarters = [
+                ['Q1 (Jan – Mar)', 5, 7, '01', '02', '03'],
+                ['Q2 (Apr – Jun)', 8, 10, '04', '05', '06'],
+                ['Q3 (Jul – Sep)', 11, 13, '07', '08', '09'],
+                ['Q4 (Oct – Dec)', 14, 16, '10', '11', '12']
+            ];
+
+            quarters.forEach(([qLabel, rStart, rEnd, m1, m2, m3], qIdx) => {
+                const qRow = 20 + qIdx;
+                const qTrips = processedTrips.filter(r => [m1, m2, m3].some(m => r.Date.startsWith(`${targetYear}-${m}`)));
+                const qTotal = Math.round(qTrips.reduce((s, r) => s + r.Distance, 0) * 100) / 100;
+                const qBiz = Math.round(qTrips.filter(r => !r.Purpose.toLowerCase().includes('personal')).reduce((s, r) => s + r.Distance, 0) * 100) / 100;
+                const qPers = Math.round((qTotal - qBiz) * 100) / 100;
+                const qRatio = qTotal > 0 ? qBiz / qTotal : 0;
+
+                rows.push([
+                    qLabel,
+                    { t: 'n', v: qTrips.length, f: `SUM(B${rStart}:B${rEnd})`, z: '#,##0' },
+                    { t: 'n', v: qTotal, f: `SUM(C${rStart}:C${rEnd})`, z: '#,##0.00' },
+                    { t: 'n', v: qBiz, f: `SUM(D${rStart}:D${rEnd})`, z: '#,##0.00' },
+                    { t: 'n', v: qPers, f: `SUM(E${rStart}:E${rEnd})`, z: '#,##0.00' },
+                    { t: 'n', v: qRatio, f: `IF(C${qRow}>0,D${qRow}/C${qRow},0)`, z: '0.00%' }
+                ]);
+            });
+
+            const wsMonth = XLSX.utils.aoa_to_sheet(rows);
+            wsMonth['!cols'] = [
+                { wch: 24 }, { wch: 15 }, { wch: 16 }, { wch: 26 }, { wch: 26 }, { wch: 16 }
+            ];
+            return wsMonth;
         }
 
         document.getElementById('btn-download-xlsx').addEventListener('click', function() {
@@ -1210,15 +1572,18 @@ function tig_mileage_tracker_admin_page() {
                 wsSum['!cols'] = [{ wch: 38 }, { wch: 20 }, { wch: 52 }];
                 XLSX.utils.book_append_sheet(wb, wsSum, 'Executive Summary');
 
+                const wsMonth = buildMonthlySummarySheet(targetYear, ref, lastRow, { n, totalKm, bizKm, persKm, bizRatio });
+                XLSX.utils.book_append_sheet(wb, wsMonth, 'Monthly Summary');
+
                 const headers = [
                     'Date', 'Day', 'Departure', 'Arrival', 'Origin', 'Destination',
-                    'Distance (km)', 'Odo Start', 'Odo End', 'Purpose', 'Category', 'QBO Audit Corroboration'
+                    'Distance (km)', 'Odo Start', 'Odo End', 'Purpose', 'Category', 'QBO Audit Corroboration', 'Route Continuity'
                 ];
                 const logRows = [headers];
                 processedTrips.forEach(r => {
                     logRows.push([
                         r.Date, r.Day, r.Departure, r.Arrival, r.Origin, r.Destination,
-                        r.Distance, r.OdoStart, r.OdoEnd, r.Purpose, r.Category, r.QBO
+                        r.Distance, r.OdoStart, r.OdoEnd, r.Purpose, r.Category, r.QBO, r.Continuity
                     ]);
                 });
 
@@ -1232,7 +1597,7 @@ function tig_mileage_tracker_admin_page() {
                 const wsLog = XLSX.utils.aoa_to_sheet(logRows);
                 wsLog['!cols'] = [
                     { wch: 12 }, { wch: 11 }, { wch: 11 }, { wch: 11 }, { wch: 40 }, { wch: 42 },
-                    { wch: 15 }, { wch: 13 }, { wch: 13 }, { wch: 32 }, { wch: 28 }, { wch: 34 }
+                    { wch: 15 }, { wch: 13 }, { wch: 13 }, { wch: 32 }, { wch: 28 }, { wch: 34 }, { wch: 34 }
                 ];
                 XLSX.utils.book_append_sheet(wb, wsLog, logSheetName);
 
