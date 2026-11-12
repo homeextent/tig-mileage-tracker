@@ -2,6 +2,17 @@
 
 All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPress plugin are documented here.
 
+
+## [3.1.0] - 2026-11-12
+### Fixed
+- Stripped stray comma-split numeric tokens and standalone `'ontario'`/`'scott'`/`'bunting'` collisions from default location rules, normalized Nominatim address commas in `classifyEndpoint()`, and added an automatic one-time `wp_options` cleanup migration (`tig_mileage_maybe_migrate_v310`) preserving custom user entries.
+- Restored RFC-4180 `.csv` download fallback (`downloadCsvFallback`) when SheetJS CDN scripts are blocked or fail.
+- Added visual AJAX save confirmation and session-expiry error notifications (`#tig-save-toast`) for location, anchor, and geo-cache persistence.
+
+### Added
+- Multi-schema Google Timeline parser supporting both modern Android/iOS `semanticSegments` and classic Google Takeout / older iOS `timelineObjects` (`latitudeE7`/`longitudeE7`).
+- Full QBO receipt corroboration across all approved commercial supplier and fleet stops (`Materials / Supplies`, `Tools / Repair`, `Vehicle Maintenance & Parts`).
+- Automated WordPress `.zip` build and release pipeline (`build.sh`, `.gitattributes`, and `DEVELOPER.md`).
 ## [3.0.0] - 2026-11-11
 ### Added
 - **Built-In `data/geo_cache.json` Auto-Loader:** Plugin automatically loads bundled `/data/geo_cache.json` merged with persistent WordPress `wp_options` cache—eliminating manual cache uploads on every run.

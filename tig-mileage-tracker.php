@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
  * Description: Client-side CRA-compliant mileage engine for Homeextent Inc. (2019 Ram 1500 Rebel). Auto-loads bundled geo_cache.json, manages multi-year projects/suppliers in WP Admin, corroborates QBO receipts, and exports CPA-ready Excel workbooks.
- * Version: 3.0.0
+ * Version: 3.1.0
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.0.0');
+define('TIG_MILEAGE_VERSION', '3.1.0');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
 
 // Register top-level admin menu
@@ -27,10 +27,16 @@ function tig_mileage_tracker_menu() {
     );
 }
 
-// Redirect legacy slugs cleanly
-add_action('admin_init', 'tig_mileage_legacy_slug_redirect');
-function tig_mileage_legacy_slug_redirect() {
-    if (!is_admin() || !isset($_GET['page'])) {
+// Redirect legacy slugs cleanly & run one-time v3.1.0 keyword cleanup migration
+add_action('admin_init', 'tig_mileage_admin_init');
+function tig_mileage_admin_init() {
+    if (!is_admin()) {
+        return;
+    }
+
+    tig_mileage_maybe_migrate_v310();
+
+    if (!isset($_GET['page'])) {
         return;
     }
     $page = sanitize_text_field(wp_unslash($_GET['page']));
@@ -38,6 +44,67 @@ function tig_mileage_legacy_slug_redirect() {
         wp_safe_redirect(admin_url('admin.php?page=tig-mileage'));
         exit;
     }
+}
+
+// Sanitize a comma-separated keyword string to prevent bare numbers or province names from hijacking matches
+function tig_mileage_sanitize_keywords($raw_keywords) {
+    $parts = array_map('trim', explode(',', strtolower((string) $raw_keywords)));
+    $clean = array();
+    foreach ($parts as $kw) {
+        if ($kw === '' || preg_match('/^\d+$/', $kw) || $kw === 'ontario') {
+            continue;
+        }
+        if (!in_array($kw, $clean, true)) {
+            $clean[] = $kw;
+        }
+    }
+    return implode(', ', $clean);
+}
+
+// One-time safe migration for sites upgrading from v3.0.x with legacy comma-split tokens in wp_options
+function tig_mileage_maybe_migrate_v310() {
+    $db_ver = get_option('tig_mileage_db_version', '');
+    if ($db_ver === TIG_MILEAGE_VERSION) {
+        return;
+    }
+
+    $locations = get_option('tig_mileage_locations');
+    if (is_array($locations) && !empty($locations)) {
+        $updated = false;
+        foreach ($locations as &$loc) {
+            if (!isset($loc['keywords'])) {
+                continue;
+            }
+            $orig_kw = $loc['keywords'];
+            $cleaned = tig_mileage_sanitize_keywords($orig_kw);
+
+            // Remove overly broad street-only tokens from specific multi-tenant street rules
+            $id = $loc['id'] ?? '';
+            if ($id === 'loc_regdoors') {
+                $tokens = array_filter(array_map('trim', explode(',', $cleaned)), function ($t) {
+                    return $t !== 'scott';
+                });
+                $cleaned = implode(', ', $tokens);
+            } elseif ($id === 'loc_a1floor' || $id === 'loc_goemans') {
+                $tokens = array_filter(array_map('trim', explode(',', $cleaned)), function ($t) {
+                    return $t !== 'bunting';
+                });
+                $cleaned = implode(', ', $tokens);
+            }
+
+            if ($cleaned !== '' && $cleaned !== $orig_kw) {
+                $loc['keywords'] = $cleaned;
+                $updated = true;
+            }
+        }
+        unset($loc);
+
+        if ($updated) {
+            update_option('tig_mileage_locations', $locations, false);
+        }
+    }
+
+    update_option('tig_mileage_db_version', TIG_MILEAGE_VERSION, false);
 }
 
 // Default Location & Project Rules (Seeded on first load, editable in WP Admin)
@@ -50,29 +117,29 @@ function tig_mileage_get_default_locations() {
         // 2025 Historical Projects
         array('id' => 'loc_2025_1', 'name' => '89 Bayview Drive, St. Catharines', 'keywords' => 'bayview, graham avenue, corbett avenue, johnston street, 186 dalhousie', 'purpose' => 'Project Site Visit', 'category' => '2025 Project #1 (Bayview)', 'year' => '2025'),
         array('id' => 'loc_2025_2', 'name' => '10 Arden Court, St. Catharines', 'keywords' => 'arden court, lakehurst drive, 184 lakeport, 186 lakeport, 188 lakeport, 178 lakeport', 'purpose' => 'Project Site Visit', 'category' => '2025 Project #2 (Arden Crt)', 'year' => '2025'),
-        array('id' => 'loc_2025_3', 'name' => 'Garner Avenue, Fenwick (Pelham)', 'keywords' => 'garner avenue, balfour street, canboro road, fenwick, welland road, fenwick, effingham street, fonthill', 'purpose' => 'Project Site Visit', 'category' => '2025 Project #3 (Garner Ave)', 'year' => '2025'),
+        array('id' => 'loc_2025_3', 'name' => 'Garner Avenue, Fenwick (Pelham)', 'keywords' => 'garner avenue, balfour street, canboro road, fenwick, welland road, effingham street, fonthill', 'purpose' => 'Project Site Visit', 'category' => '2025 Project #3 (Garner Ave)', 'year' => '2025'),
         // Multi-Year Development & Approved Pick-Up Depots
         array('id' => 'loc_rathfon', 'name' => 'Rathfon Rd Dev, Wainfleet', 'keywords' => 'rathfon, wainfleet, camelot beach', 'purpose' => 'Project Development', 'category' => 'Rathfon Rd Dev', 'year' => 'ALL'),
-        array('id' => 'loc_regdoors', 'name' => 'Regional Doors & Hardware (38 Scott St W)', 'keywords' => '34 scott, 36 scott, 38 scott, 44 scott, 46 scott, 34, scott, 36, scott, 38, scott, 44, scott, 46, scott, l2r 5l3', 'purpose' => 'Materials / Supplies', 'category' => 'Regional Doors & Hardware', 'year' => 'ALL'),
+        array('id' => 'loc_regdoors', 'name' => 'Regional Doors & Hardware (38 Scott St W)', 'keywords' => '34 scott, 36 scott, 38 scott, 44 scott, 46 scott, l2r 5l3', 'purpose' => 'Materials / Supplies', 'category' => 'Regional Doors & Hardware', 'year' => 'ALL'),
         array('id' => 'loc_fonthill', 'name' => 'Fonthill Lumber & Truss (7 Woodlawn Rd, Welland)', 'keywords' => 'woodlawn, primeway, l3b 0a1, fonthill lumber', 'purpose' => 'Materials / Supplies', 'category' => 'Fonthill Lumber & Truss', 'year' => 'ALL'),
-        array('id' => 'loc_convoy', 'name' => 'Convoy Supply (29 Seapark Dr, St. Catharines)', 'keywords' => '29 seapark, 25 seapark, 29, seapark, 25, seapark', 'purpose' => 'Materials / Supplies', 'category' => 'Convoy Supply', 'year' => 'ALL'),
-        array('id' => 'loc_hd_nf', 'name' => 'Home Depot (7190 Morrison St, Niagara Falls)', 'keywords' => '7190 morrison, 7190, morrison, home depot, morrison', 'purpose' => 'Materials / Supplies', 'category' => 'Home Depot - Niagara Falls', 'year' => 'ALL'),
+        array('id' => 'loc_convoy', 'name' => 'Convoy Supply (29 Seapark Dr, St. Catharines)', 'keywords' => '29 seapark, 25 seapark, seapark', 'purpose' => 'Materials / Supplies', 'category' => 'Convoy Supply', 'year' => 'ALL'),
+        array('id' => 'loc_hd_nf', 'name' => 'Home Depot (7190 Morrison St, Niagara Falls)', 'keywords' => '7190 morrison, home depot, morrison', 'purpose' => 'Materials / Supplies', 'category' => 'Home Depot - Niagara Falls', 'year' => 'ALL'),
         array('id' => 'loc_rona_stc', 'name' => 'RONA (250 Dunkirk Rd, St. Catharines)', 'keywords' => 'dunkirk', 'purpose' => 'Materials / Supplies', 'category' => 'RONA - St. Catharines', 'year' => 'ALL'),
         array('id' => 'loc_rona_nf', 'name' => 'RONA+ (7959 McLeod Rd, Niagara Falls)', 'keywords' => 'mcleod', 'purpose' => 'Materials / Supplies', 'category' => 'RONA - Niagara Falls', 'year' => 'ALL'),
-        array('id' => 'loc_a1floor', 'name' => 'A-1 Flooring Canada (168 Bunting Rd)', 'keywords' => '168 bunting, 168, bunting, a-1 flooring', 'purpose' => 'Materials / Supplies', 'category' => 'A-1 Flooring', 'year' => 'ALL'),
-        array('id' => 'loc_goemans', 'name' => 'Goemans Appliances (166 Bunting Rd)', 'keywords' => '166 bunting, 166, bunting, goemans', 'purpose' => 'Materials / Supplies', 'category' => 'Goemans Appliances', 'year' => 'ALL'),
+        array('id' => 'loc_a1floor', 'name' => 'A-1 Flooring Canada (168 Bunting Rd)', 'keywords' => '168 bunting, a-1 flooring', 'purpose' => 'Materials / Supplies', 'category' => 'A-1 Flooring', 'year' => 'ALL'),
+        array('id' => 'loc_goemans', 'name' => 'Goemans Appliances (166 Bunting Rd)', 'keywords' => '166 bunting, goemans', 'purpose' => 'Materials / Supplies', 'category' => 'Goemans Appliances', 'year' => 'ALL'),
         array('id' => 'loc_scbs', 'name' => 'St. Catharines Building Supplies (Bunting Rd)', 'keywords' => 'bunting', 'purpose' => 'Materials / Supplies', 'category' => 'Building Supplies', 'year' => 'ALL'),
         array('id' => 'loc_turkstra', 'name' => 'Turkstra Lumber (Kent Ave)', 'keywords' => 'kent avenue, kent ave', 'purpose' => 'Materials / Supplies', 'category' => 'Turkstra Lumber', 'year' => 'ALL'),
-        array('id' => 'loc_byrcon', 'name' => 'BYRCON Wood Products (445 Eastchester Ave E)', 'keywords' => '445 eastchester, 445, eastchester', 'purpose' => 'Materials / Supplies', 'category' => 'BYRCON Wood Products', 'year' => 'ALL'),
-        array('id' => 'loc_hh_scott', 'name' => 'Home Hardware (387 Scott St)', 'keywords' => '387 scott, 400 scott, 387, scott, 400, scott, l2n 6t4', 'purpose' => 'Materials / Supplies', 'category' => 'Home Hardware', 'year' => 'ALL'),
+        array('id' => 'loc_byrcon', 'name' => 'BYRCON Wood Products (445 Eastchester Ave E)', 'keywords' => '445 eastchester, eastchester', 'purpose' => 'Materials / Supplies', 'category' => 'BYRCON Wood Products', 'year' => 'ALL'),
+        array('id' => 'loc_hh_scott', 'name' => 'Home Hardware (387 Scott St)', 'keywords' => '387 scott, 400 scott, l2n 6t4', 'purpose' => 'Materials / Supplies', 'category' => 'Home Hardware', 'year' => 'ALL'),
         array('id' => 'loc_hh_hartzel', 'name' => 'Home Hardware (111 Hartzel Rd)', 'keywords' => 'hartzel', 'purpose' => 'Materials / Supplies', 'category' => 'Home Hardware', 'year' => 'ALL'),
-        array('id' => 'loc_hh_4th', 'name' => 'Home Hardware (1380 Fourth Ave)', 'keywords' => '1380 fourth, 1380, fourth', 'purpose' => 'Materials / Supplies', 'category' => 'Home Hardware', 'year' => 'ALL'),
-        array('id' => 'loc_hh_welland', 'name' => 'Home Hardware Building Centre (Welland)', 'keywords' => '693 south pelham, 693, south pelham', 'purpose' => 'Materials / Supplies', 'category' => 'Home Hardware', 'year' => 'ALL'),
+        array('id' => 'loc_hh_4th', 'name' => 'Home Hardware (1380 Fourth Ave)', 'keywords' => '1380 fourth', 'purpose' => 'Materials / Supplies', 'category' => 'Home Hardware', 'year' => 'ALL'),
+        array('id' => 'loc_hh_welland', 'name' => 'Home Hardware Building Centre (Welland)', 'keywords' => '693 south pelham', 'purpose' => 'Materials / Supplies', 'category' => 'Home Hardware', 'year' => 'ALL'),
         array('id' => 'loc_hh_nf', 'name' => 'Home Hardware (Huggins St, Niagara Falls)', 'keywords' => 'huggins', 'purpose' => 'Materials / Supplies', 'category' => 'Home Hardware', 'year' => 'ALL'),
         array('id' => 'loc_arts', 'name' => "Art's Tools / A&A Tools (Nihan Dr)", 'keywords' => 'nihan', 'purpose' => 'Tools / Repair', 'category' => 'A&A Tools', 'year' => 'ALL'),
         array('id' => 'loc_princess', 'name' => 'Princess Auto (Fourth Ave)', 'keywords' => 'princess auto', 'purpose' => 'Tools / Repair', 'category' => 'Princess Auto', 'year' => 'ALL'),
-        array('id' => 'loc_fleet', 'name' => 'Ontario St Automotive Corridor', 'keywords' => 'queenston tire, performance chrysler, partsource, 308 ontario, 317 ontario, 319 ontario, 327 ontario, 335 ontario, 308, ontario, 317, ontario, 319, ontario', 'purpose' => 'Vehicle Maintenance & Parts', 'category' => 'Fleet Overhead', 'year' => 'ALL'),
-        array('id' => 'loc_zehrs', 'name' => 'ZEHRS Fairview Mall', 'keywords' => 'zehrs, fairview mall, 285 geneva, 285, geneva, 277 geneva', 'purpose' => 'Personal', 'category' => 'Grocery / Personal', 'year' => 'ALL'),
+        array('id' => 'loc_fleet', 'name' => 'Ontario St Automotive Corridor', 'keywords' => 'queenston tire, performance chrysler, partsource, 308 ontario, 317 ontario, 319 ontario, 327 ontario, 335 ontario', 'purpose' => 'Vehicle Maintenance & Parts', 'category' => 'Fleet Overhead', 'year' => 'ALL'),
+        array('id' => 'loc_zehrs', 'name' => 'ZEHRS Fairview Mall', 'keywords' => 'zehrs, fairview mall, 285 geneva, 277 geneva', 'purpose' => 'Personal', 'category' => 'Grocery / Personal', 'year' => 'ALL'),
         array('id' => 'loc_gym', 'name' => 'Fit4Less Gym / Pen Centre', 'keywords' => 'glendale', 'purpose' => 'Personal', 'category' => 'Gym / Personal', 'year' => 'ALL')
     );
 }
@@ -119,10 +186,14 @@ function tig_mileage_ajax_save_settings() {
                 if (empty($l['name']) || empty($l['keywords'])) {
                     continue;
                 }
+                $clean_kw = tig_mileage_sanitize_keywords($l['keywords']);
+                if ($clean_kw === '') {
+                    continue;
+                }
                 $clean_locs[] = array(
                     'id'       => sanitize_key($l['id'] ?? uniqid('loc_')),
                     'name'     => sanitize_text_field($l['name']),
-                    'keywords' => sanitize_text_field($l['keywords']),
+                    'keywords' => sanitize_text_field($clean_kw),
                     'purpose'  => sanitize_text_field($l['purpose'] ?? 'Project Site Visit'),
                     'category' => sanitize_text_field($l['category'] ?? 'Custom Location'),
                     'year'     => sanitize_text_field($l['year'] ?? 'ALL')
@@ -147,7 +218,7 @@ function tig_mileage_ajax_save_settings() {
         }
     }
 
-    wp_send_json_success('Settings saved.');
+    wp_send_json_success(array('message' => 'Settings saved to WordPress database.'));
 }
 
 // AJAX: Persist newly resolved coordinates into WP options (and data/geo_cache.json if writable)
@@ -219,9 +290,12 @@ function tig_mileage_tracker_admin_page() {
 
         <div style="background: #fff; border: 1px solid #ccd0d4; border-top: none; padding: 24px; border-radius: 0 0 6px 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
             <!-- Navigation Tabs -->
-            <div style="border-bottom: 1px solid #dcdcde; margin-bottom: 20px; display: flex; gap: 8px;">
-                <button type="button" class="tig-tab-btn active" data-tab="tab-process" style="padding: 10px 16px; border: 1px solid #dcdcde; border-bottom: none; background: #fff; font-weight: 600; color: #1F497D; border-radius: 4px 4px 0 0; cursor: pointer;">1. Process &amp; Export Logbook</button>
-                <button type="button" class="tig-tab-btn" data-tab="tab-locations" style="padding: 10px 16px; border: 1px solid #dcdcde; border-bottom: none; background: #f6f7f7; font-weight: 600; color: #50575e; border-radius: 4px 4px 0 0; cursor: pointer;">2. Projects, Suppliers &amp; Odometer Anchors</button>
+            <div style="border-bottom: 1px solid #dcdcde; margin-bottom: 20px; display: flex; gap: 8px; justify-content: space-between; align-items: center;">
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" class="tig-tab-btn active" data-tab="tab-process" style="padding: 10px 16px; border: 1px solid #dcdcde; border-bottom: none; background: #fff; font-weight: 600; color: #1F497D; border-radius: 4px 4px 0 0; cursor: pointer;">1. Process &amp; Export Logbook</button>
+                    <button type="button" class="tig-tab-btn" data-tab="tab-locations" style="padding: 10px 16px; border: 1px solid #dcdcde; border-bottom: none; background: #f6f7f7; font-weight: 600; color: #50575e; border-radius: 4px 4px 0 0; cursor: pointer;">2. Projects, Suppliers &amp; Odometer Anchors</button>
+                </div>
+                <span id="tig-save-toast" style="display: none; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 4px;"></span>
             </div>
 
             <!-- TAB 1: PROCESS & EXPORT -->
@@ -262,7 +336,7 @@ function tig_mileage_tracker_admin_page() {
                 <div id="box-timeline" style="border: 2px dashed #c3c4c7; border-radius: 6px; padding: 32px 20px; text-align: center; background: #f9f9f9; cursor: pointer;">
                     <span class="dashicons dashicons-cloud-upload" style="font-size: 36px; width: 36px; height: 36px; color: #1F497D;"></span>
                     <div style="font-size: 15px; font-weight: 600; color: #1d2327; margin-top: 8px;">Drop Timeline.json or location-history.json Here</div>
-                    <div style="font-size: 12px; color: #646970; margin-top: 4px;">Processed 100% locally in your browser (supports 50MB+ files). New coordinates auto-resolve and save permanently.</div>
+                    <div style="font-size: 12px; color: #646970; margin-top: 4px;">Processed 100% locally in your browser (supports Android <code>semanticSegments</code> &amp; iOS/Takeout <code>timelineObjects</code>, 50MB+).</div>
                     <div id="progress-wrap" style="display: none; max-width: 480px; margin: 14px auto 0;">
                         <div style="background: #e0e0e0; border-radius: 4px; height: 8px; overflow: hidden;">
                             <div id="progress-bar" style="width: 0%; height: 100%; background: #1F497D; transition: width 0.25s;"></div>
@@ -434,6 +508,25 @@ function tig_mileage_tracker_admin_page() {
             'john bear', 'superior petrofuels', 'esso', 'shell', 'petro-canada', 'pioneer'
         ];
 
+        const SUPPLIER_PURPOSES = [
+            'Materials / Supplies',
+            'Tools / Repair',
+            'Vehicle Maintenance & Parts'
+        ];
+
+        let toastTimer = null;
+        function showSaveToast(message, isError = false) {
+            const el = document.getElementById('tig-save-toast');
+            if (!el) return;
+            el.style.display = 'inline-block';
+            el.style.background = isError ? '#fde8e8' : '#e6f4ea';
+            el.style.color = isError ? '#b32d2e' : '#1e7e34';
+            el.style.border = isError ? '1px solid #f5c2c7' : '1px solid #b7e1cd';
+            el.innerText = message;
+            if (toastTimer) clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => { el.style.display = 'none'; }, 5000);
+        }
+
         // Tab Switching
         document.querySelectorAll('.tig-tab-btn').forEach(btn => {
             btn.addEventListener('click', function() {
@@ -475,27 +568,48 @@ function tig_mileage_tracker_admin_page() {
         }
         renderLocationsTable();
 
-        function persistSettings() {
-            fetch(AJAX_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    action: 'tig_save_settings',
-                    security: NONCE,
-                    locations: JSON.stringify(customLocations),
-                    anchors: JSON.stringify(odoAnchors)
-                })
-            });
+        async function persistSettings() {
+            try {
+                const resp = await fetch(AJAX_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({
+                        action: 'tig_save_settings',
+                        security: NONCE,
+                        locations: JSON.stringify(customLocations),
+                        anchors: JSON.stringify(odoAnchors)
+                    })
+                });
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}`);
+                }
+                const data = await resp.json();
+                if (!data || !data.success) {
+                    throw new Error((data && data.data) ? data.data : 'Invalid server response');
+                }
+                showSaveToast('✓ Saved to WordPress database');
+                return true;
+            } catch (err) {
+                showSaveToast('⚠ Save failed — session may have expired. Refresh page & re-login.', true);
+                return false;
+            }
+        }
+
+        function cleanKeywordInput(raw) {
+            return raw.split(',')
+                .map(k => k.trim().toLowerCase())
+                .filter(k => k && !/^\d+$/.test(k) && k !== 'ontario')
+                .join(', ');
         }
 
         document.getElementById('btn-add-location').addEventListener('click', function() {
             const name = document.getElementById('new-loc-name').value.trim();
-            const keywords = document.getElementById('new-loc-keywords').value.trim().toLowerCase();
+            const keywords = cleanKeywordInput(document.getElementById('new-loc-keywords').value);
             const purpose = document.getElementById('new-loc-purpose').value;
             const category = document.getElementById('new-loc-category').value.trim() || purpose;
             const year = document.getElementById('new-loc-year').value;
             if (!name || !keywords) {
-                alert('Please enter both a Clean Display Name and Street Keywords.');
+                alert('Please enter both a Clean Display Name and valid Street Keywords (not bare numbers).');
                 return;
             }
             customLocations.unshift({
@@ -509,11 +623,13 @@ function tig_mileage_tracker_admin_page() {
             document.getElementById('new-loc-category').value = '';
         });
 
-        document.getElementById('btn-save-anchors').addEventListener('click', function() {
+        document.getElementById('btn-save-anchors').addEventListener('click', async function() {
             odoAnchors['2026'].odo = parseFloat(document.getElementById('anchor-2026-odo').value) || 136111.0;
             odoAnchors['2027'].odo = parseFloat(document.getElementById('anchor-2027-odo').value) || 136111.0;
-            persistSettings();
-            alert('Odometer anchors updated.');
+            const ok = await persistSettings();
+            if (ok) {
+                alert('Odometer anchors saved to WordPress database.');
+            }
         });
 
         // Cache import/export in Tab 2
@@ -522,11 +638,11 @@ function tig_mileage_tracker_admin_page() {
             const file = e.target.files[0];
             if (!file) return;
             const reader = new FileReader();
-            reader.onload = function(ev) {
+            reader.onload = async function(ev) {
                 try {
                     const imported = JSON.parse(ev.target.result);
                     Object.assign(geoCache, imported);
-                    fetch(AJAX_URL, {
+                    const resp = await fetch(AJAX_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                         body: new URLSearchParams({
@@ -534,13 +650,17 @@ function tig_mileage_tracker_admin_page() {
                             security: NONCE,
                             entries: JSON.stringify(imported)
                         })
-                    }).then(() => {
-                        const cnt = Object.keys(geoCache).length;
-                        document.getElementById('status-cache').innerHTML = `&#10003; ${cnt} coordinates auto-loaded &amp; saved permanently`;
-                        alert(`Imported ${Object.keys(imported).length} locations into permanent plugin cache.`);
                     });
+                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                    const data = await resp.json();
+                    if (!data || !data.success) throw new Error('Server rejected cache save');
+                    const cnt = Object.keys(geoCache).length;
+                    document.getElementById('status-cache').innerHTML = `&#10003; ${cnt} coordinates auto-loaded &amp; saved permanently`;
+                    showSaveToast(`✓ Imported ${Object.keys(imported).length} coordinates`);
+                    alert(`Imported ${Object.keys(imported).length} locations into permanent plugin cache.`);
                 } catch (err) {
-                    alert('Invalid JSON: ' + err.message);
+                    showSaveToast('⚠ Cache import failed: ' + err.message, true);
+                    alert('Cache import error: ' + err.message);
                 }
             };
             reader.readAsText(file);
@@ -599,27 +719,88 @@ function tig_mileage_tracker_admin_page() {
         const torontoDayFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Toronto', weekday: 'long' });
         const torontoTimeFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Toronto', hour: '2-digit', minute: '2-digit', hour12: true });
 
-        function parseTorontoTimestamp(isoStr) {
-            const dt = new Date(isoStr);
+        function parseTorontoTimestamp(isoOrMs) {
+            if (isoOrMs === undefined || isoOrMs === null || isoOrMs === '') return null;
+            const dt = /^\d+$/.test(String(isoOrMs)) ? new Date(Number(isoOrMs)) : new Date(isoOrMs);
             if (isNaN(dt.getTime())) return null;
             return { ms: dt.getTime(), date: torontoDateFmt.format(dt), day: torontoDayFmt.format(dt), time: torontoTimeFmt.format(dt) };
         }
 
-        function parseLatLng(str) {
-            if (!str || typeof str !== 'string') return [null, null];
-            const parts = str.replace(/°/g, '').trim().split(',');
-            if (parts.length < 2) return [null, null];
-            const lat = parseFloat(parts[0].trim()), lon = parseFloat(parts[1].trim());
-            return (isNaN(lat) || isNaN(lon)) ? [null, null] : [lat, lon];
+        function extractLatLngPair(locObj) {
+            if (!locObj) return [null, null];
+            if (typeof locObj === 'string') {
+                const parts = locObj.replace(/°/g, '').trim().split(',');
+                if (parts.length < 2) return [null, null];
+                const lat = parseFloat(parts[0].trim()), lon = parseFloat(parts[1].trim());
+                return (isNaN(lat) || isNaN(lon)) ? [null, null] : [lat, lon];
+            }
+            if (typeof locObj === 'object') {
+                if (locObj.latLng) return extractLatLngPair(locObj.latLng);
+                if (typeof locObj.latitude === 'number' && typeof locObj.longitude === 'number') {
+                    return [locObj.latitude, locObj.longitude];
+                }
+                if (typeof locObj.latitudeE7 === 'number' && typeof locObj.longitudeE7 === 'number') {
+                    return [locObj.latitudeE7 / 1e7, locObj.longitudeE7 / 1e7];
+                }
+                if (typeof locObj.latE7 === 'number' && typeof locObj.lngE7 === 'number') {
+                    return [locObj.latE7 / 1e7, locObj.lngE7 / 1e7];
+                }
+            }
+            return [null, null];
+        }
+
+        // Normalize both Android semanticSegments and iOS / Takeout timelineObjects schemas
+        function extractNormalizedSegments(raw) {
+            const out = [];
+            const modernList = Array.isArray(raw) ? raw : (Array.isArray(raw.semanticSegments) ? raw.semanticSegments : []);
+            for (let i = 0; i < modernList.length; i++) {
+                const seg = modernList[i];
+                const act = seg && seg.activity;
+                if (!act) continue;
+                const topType = (act.topCandidate && act.topCandidate.type) ? String(act.topCandidate.type).toUpperCase() : '';
+                out.push({
+                    type: topType,
+                    distanceMeters: parseFloat(act.distanceMeters) || 0,
+                    startTime: seg.startTime,
+                    endTime: seg.endTime,
+                    startLoc: act.start,
+                    endLoc: act.end
+                });
+            }
+
+            if (Array.isArray(raw.timelineObjects)) {
+                for (let i = 0; i < raw.timelineObjects.length; i++) {
+                    const seg = raw.timelineObjects[i] && raw.timelineObjects[i].activitySegment;
+                    if (!seg) continue;
+                    const topType = String(
+                        seg.activityType ||
+                        (Array.isArray(seg.activities) && seg.activities[0] && seg.activities[0].activityType) ||
+                        ''
+                    ).toUpperCase();
+                    const dur = seg.duration || {};
+                    out.push({
+                        type: topType,
+                        distanceMeters: parseFloat(seg.distance) || 0,
+                        startTime: dur.startTimestamp || dur.startTimestampMs || seg.startTimestamp,
+                        endTime: dur.endTimestamp || dur.endTimestampMs || seg.endTimestamp,
+                        startLoc: seg.startLocation,
+                        endLoc: seg.endLocation
+                    });
+                }
+            }
+            return out;
         }
 
         function classifyEndpoint(addr, day, year) {
             const a = String(addr || '').toLowerCase();
-            if (OUT_OF_REGION.some(c => a.includes(c))) {
+            // Strip Nominatim commas ("38, Scott Street West" -> "38 scott street west")
+            const aNorm = a.replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+
+            if (OUT_OF_REGION.some(c => aNorm.includes(c))) {
                 return [addr, 'Personal', 'Out of Region'];
             }
             // Home Depot YMCA weekday vs weekend rule
-            if (a.includes('ymca')) {
+            if (aNorm.includes('ymca')) {
                 if (day === 'Saturday' || day === 'Sunday') {
                     return ['YMCA Drive (Fit4Less)', 'Personal', 'Gym / Personal'];
                 }
@@ -628,12 +809,32 @@ function tig_mileage_tracker_admin_page() {
             // Match against user-managed Locations & Projects table
             for (const loc of customLocations) {
                 if (loc.year !== 'ALL' && loc.year !== year) continue;
-                const kwList = loc.keywords.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
-                if (kwList.some(k => a.includes(k))) {
+                const kwList = loc.keywords
+                    .split(',')
+                    .map(k => k.trim().toLowerCase())
+                    .filter(k => k && !/^\d+$/.test(k) && k !== 'ontario');
+                if (kwList.some(k => aNorm.includes(k))) {
                     return [loc.name, loc.purpose, loc.category];
                 }
             }
             return [addr, 'Review', 'Uncategorized'];
+        }
+
+        function matchQboForTrip(dateStr, destClean, category, purpose) {
+            const txs = txByDate[dateStr];
+            if (!txs || !txs.length) return null;
+
+            const targetHint = `${destClean} ${category}`.toLowerCase();
+            const vendorMatch = txs.find(tx => {
+                const v = tx.name.toLowerCase();
+                return APPROVED_PICKUP_VENDORS.some(kw => v.includes(kw) && targetHint.includes(kw));
+            });
+            if (vendorMatch) return vendorMatch;
+
+            if (purpose === 'Review') {
+                return txs.reduce((max, cur) => cur.amt > max.amt ? cur : max, txs[0]);
+            }
+            return null;
         }
 
         function setProgress(pct, text) {
@@ -758,16 +959,24 @@ function tig_mileage_tracker_admin_page() {
                 await new Promise(res => setTimeout(res, 1100));
             }
             if (Object.keys(newlyResolved).length > 0) {
-                fetch(AJAX_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: new URLSearchParams({
-                        action: 'tig_save_geocache',
-                        security: NONCE,
-                        entries: JSON.stringify(newlyResolved)
-                    })
-                });
-                document.getElementById('status-cache').innerHTML = `&#10003; ${Object.keys(geoCache).length} coordinates loaded (+${Object.keys(newlyResolved).length} new saved permanently)`;
+                try {
+                    const resp = await fetch(AJAX_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({
+                            action: 'tig_save_geocache',
+                            security: NONCE,
+                            entries: JSON.stringify(newlyResolved)
+                        })
+                    });
+                    if (resp.ok) {
+                        document.getElementById('status-cache').innerHTML = `&#10003; ${Object.keys(geoCache).length} coordinates loaded (+${Object.keys(newlyResolved).length} new saved permanently)`;
+                    } else {
+                        showSaveToast('⚠ Resolved new GPS points in memory, but DB save failed (session expired).', true);
+                    }
+                } catch (e) {
+                    showSaveToast('⚠ Resolved new GPS points in memory, but DB save failed.', true);
+                }
             }
         }
 
@@ -783,25 +992,23 @@ function tig_mileage_tracker_admin_page() {
                 setTimeout(async function() {
                     try {
                         const raw = JSON.parse(ev.target.result);
-                        const segments = Array.isArray(raw) ? raw : (raw.semanticSegments || []);
+                        const segments = extractNormalizedSegments(raw);
                         const rawTrips = [];
                         const missingCoords = new Map();
 
                         for (let i = 0; i < segments.length; i++) {
-                            const act = segments[i].activity;
-                            if (!act) continue;
-                            const topType = (act.topCandidate && act.topCandidate.type) ? act.topCandidate.type.toUpperCase() : '';
-                            if (!['VEHICLE', 'PASSENGER', 'DRIVING'].some(k => topType.includes(k))) continue;
+                            const seg = segments[i];
+                            if (!['VEHICLE', 'PASSENGER', 'DRIVING'].some(k => seg.type.includes(k))) continue;
 
-                            const distKm = Math.round(((parseFloat(act.distanceMeters) || 0) / 1000) * 100) / 100;
+                            const distKm = Math.round((seg.distanceMeters / 1000) * 100) / 100;
                             if (distKm < 0.1) continue;
 
-                            const startInfo = parseTorontoTimestamp(segments[i].startTime);
-                            const endInfo = parseTorontoTimestamp(segments[i].endTime);
+                            const startInfo = parseTorontoTimestamp(seg.startTime);
+                            const endInfo = parseTorontoTimestamp(seg.endTime);
                             if (!startInfo || !endInfo || !startInfo.date.startsWith(targetYear)) continue;
 
-                            const [oLat, oLon] = parseLatLng(act.start && act.start.latLng);
-                            const [dLat, dLon] = parseLatLng(act.end && act.end.latLng);
+                            const [oLat, oLon] = extractLatLngPair(seg.startLoc);
+                            const [dLat, dLon] = extractLatLngPair(seg.endLoc);
                             const oKey = (oLat !== null && oLon !== null) ? `${oLat.toFixed(4)},${oLon.toFixed(4)}` : '';
                             const dKey = (dLat !== null && dLon !== null) ? `${dLat.toFixed(4)},${dLon.toFixed(4)}` : '';
 
@@ -841,11 +1048,15 @@ function tig_mileage_tracker_admin_page() {
                                 category = 'Return from Personal';
                             }
 
-                            if (purpose === 'Review' && txByDate[t.Date]) {
-                                const topTx = txByDate[t.Date].reduce((max, cur) => cur.amt > max.amt ? cur : max, txByDate[t.Date][0]);
-                                purpose = 'Materials / Supplies';
-                                category = `QBO Verified: ${topTx.name}`;
-                                qboNote = `QBO Receipt: $${topTx.amt.toFixed(2)} (${topTx.name})`;
+                            if (purpose === 'Review' || SUPPLIER_PURPOSES.includes(purpose)) {
+                                const matchedTx = matchQboForTrip(t.Date, destClean, category, purpose);
+                                if (matchedTx) {
+                                    qboNote = `QBO Receipt: $${matchedTx.amt.toFixed(2)} (${matchedTx.name})`;
+                                    if (purpose === 'Review') {
+                                        purpose = 'Materials / Supplies';
+                                        category = `QBO Verified: ${matchedTx.name}`;
+                                    }
+                                }
                             }
 
                             deduped.push({
@@ -908,7 +1119,7 @@ function tig_mileage_tracker_admin_page() {
 
                         setProgress(100, 'Processing Complete');
                         document.getElementById('progress-bar').style.background = '#2e7d32';
-                        document.getElementById('status-timeline').innerHTML = '<span style="color:#2e7d32;">&#10003; Processing Complete</span>';
+                        document.getElementById('status-timeline').innerHTML = `<span style="color:#2e7d32;">&#10003; Processing Complete (${deduped.length} trips verified for ${targetYear})</span>`;
                         const btn = document.getElementById('btn-download-xlsx');
                         btn.disabled = false;
                         btn.style.opacity = '1';
@@ -919,6 +1130,40 @@ function tig_mileage_tracker_admin_page() {
             };
             reader.readAsText(file);
         });
+
+        function csvEscape(val) {
+            const s = String(val === undefined || val === null ? '' : val);
+            if (/[",\r\n]/.test(s)) {
+                return '"' + s.replace(/"/g, '""') + '"';
+            }
+            return s;
+        }
+
+        function downloadCsvFallback(targetYear, metrics) {
+            const headers = [
+                'Date', 'Day', 'Departure', 'Arrival', 'Origin', 'Destination',
+                'Distance (km)', 'Odo Start', 'Odo End', 'Purpose', 'Category', 'QBO Audit Corroboration'
+            ];
+            const lines = [
+                csvEscape(`HOMEEXTENT INC. (o/a THE INNOVATIVE GROUP) — ${targetYear} VEHICLE MILEAGE LOGBOOK`),
+                csvEscape(`Opening Odo: ${metrics.openOdo} km | Closing Odo: ${metrics.closeOdo} km | Total KM: ${metrics.totalKm} | Commercial KM: ${metrics.bizKm} (${(metrics.bizRatio * 100).toFixed(2)}%)`),
+                '',
+                headers.map(csvEscape).join(',')
+            ];
+            processedTrips.forEach(r => {
+                lines.push([
+                    r.Date, r.Day, r.Departure, r.Arrival, r.Origin, r.Destination,
+                    r.Distance, r.OdoStart, r.OdoEnd, r.Purpose, r.Category, r.QBO
+                ].map(csvEscape).join(','));
+            });
+            const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `TIG_Mileage_Logbook_${targetYear}_CRA_Ready.csv`;
+            a.click();
+            alert('Excel library (SheetJS) was blocked by browser/network; downloaded CRA-ready CSV fallback instead.');
+        }
 
         document.getElementById('btn-download-xlsx').addEventListener('click', function() {
             if (!processedTrips.length) return;
@@ -935,57 +1180,66 @@ function tig_mileage_tracker_admin_page() {
             const closeOdo = processedTrips[n - 1].OdoEnd;
             const odoDelta = Math.round((closeOdo - openOdo) * 100) / 100;
 
-            const wb = XLSX.utils.book_new();
-            const ref = `'${logSheetName}'`;
-            const sumData = [
-                [`HOMEEXTENT INC. (o/a THE INNOVATIVE GROUP) — ${targetYear} VEHICLE MILEAGE SUMMARY`],
-                ['Vehicle: 2019 Ram 1500 Rebel  |  Operating Territory: Niagara Region (Grimsby Geo-Fence Enforced)'],
-                [''],
-                ['Metric', 'Value', 'Audit Notes'],
-                ['Reporting Period Start Date', { t: 's', v: processedTrips[0].Date, f: `MIN(${ref}!A2:A${lastRow})` }, 'First logged trip in period'],
-                ['Reporting Period End Date', { t: 's', v: processedTrips[n - 1].Date, f: `MAX(${ref}!A2:A${lastRow})` }, 'Last logged trip in period'],
-                ['Opening Odometer Reading (km)', { t: 'n', v: openOdo, f: `${ref}!H2`, z: '#,##0.0' }, 'Continuous odometer handoff'],
-                ['Closing Odometer Reading (km)', { t: 'n', v: closeOdo, f: `${ref}!I${lastRow}`, z: '#,##0.0' }, 'Reconciled to physical odometer anchor'],
-                ['Odometer Distance Delta (km)', { t: 'n', v: odoDelta, f: 'B8-B7', z: '#,##0.00' }, 'Closing Odometer minus Opening Odometer'],
-                ['Total Logged Trip Kilometers (km)', { t: 'n', v: totalKm, f: `SUM(${ref}!G2:G${lastRow})`, z: '#,##0.00' }, 'Sum of all GPS-verified trips'],
-                ['Odometer Reconciliation Variance (km)', { t: 'n', v: 0, f: 'ROUND(B9-B10,1)', z: '#,##0.0' }, '0.0 km variance confirmed'],
-                ['Total Trips Logged', { t: 'n', v: n, f: `COUNTA(${ref}!A2:A${lastRow})`, z: '#,##0' }, 'Total driving segments'],
-                ['Commercial Kilometers (Deductible)', { t: 'n', v: bizKm, f: `SUMIF(${ref}!J2:J${lastRow},"<>Personal",${ref}!G2:G${lastRow})`, z: '#,##0.00' }, 'Site visits, materials, dispatch, quotes & fleet maintenance'],
-                ['Personal Kilometers (Non-Deductible)', { t: 'n', v: persKm, f: `SUMIF(${ref}!J2:J${lastRow},"Personal",${ref}!G2:G${lastRow})`, z: '#,##0.00' }, 'Out-of-region travel, personal errands & weekend gym'],
-                ['CRA Commercial Business-Use %', { t: 'n', v: bizRatio, f: 'B13/B10', z: '0.00%' }, 'Deductible corporate proportion under ITA s. 18(1)(a)']
-            ];
+            if (typeof XLSX === 'undefined') {
+                downloadCsvFallback(targetYear, { openOdo, closeOdo, totalKm, bizKm, bizRatio });
+                return;
+            }
 
-            const wsSum = XLSX.utils.aoa_to_sheet(sumData);
-            wsSum['!cols'] = [{ wch: 38 }, { wch: 20 }, { wch: 52 }];
-            XLSX.utils.book_append_sheet(wb, wsSum, 'Executive Summary');
+            try {
+                const wb = XLSX.utils.book_new();
+                const ref = `'${logSheetName}'`;
+                const sumData = [
+                    [`HOMEEXTENT INC. (o/a THE INNOVATIVE GROUP) — ${targetYear} VEHICLE MILEAGE SUMMARY`],
+                    ['Vehicle: 2019 Ram 1500 Rebel  |  Operating Territory: Niagara Region (Grimsby Geo-Fence Enforced)'],
+                    [''],
+                    ['Metric', 'Value', 'Audit Notes'],
+                    ['Reporting Period Start Date', { t: 's', v: processedTrips[0].Date, f: `MIN(${ref}!A2:A${lastRow})` }, 'First logged trip in period'],
+                    ['Reporting Period End Date', { t: 's', v: processedTrips[n - 1].Date, f: `MAX(${ref}!A2:A${lastRow})` }, 'Last logged trip in period'],
+                    ['Opening Odometer Reading (km)', { t: 'n', v: openOdo, f: `${ref}!H2`, z: '#,##0.0' }, 'Continuous odometer handoff'],
+                    ['Closing Odometer Reading (km)', { t: 'n', v: closeOdo, f: `${ref}!I${lastRow}`, z: '#,##0.0' }, 'Reconciled to physical odometer anchor'],
+                    ['Odometer Distance Delta (km)', { t: 'n', v: odoDelta, f: 'B8-B7', z: '#,##0.00' }, 'Closing Odometer minus Opening Odometer'],
+                    ['Total Logged Trip Kilometers (km)', { t: 'n', v: totalKm, f: `SUM(${ref}!G2:G${lastRow})`, z: '#,##0.00' }, 'Sum of all GPS-verified trips'],
+                    ['Odometer Reconciliation Variance (km)', { t: 'n', v: 0, f: 'ROUND(B9-B10,1)', z: '#,##0.0' }, '0.0 km variance confirmed'],
+                    ['Total Trips Logged', { t: 'n', v: n, f: `COUNTA(${ref}!A2:A${lastRow})`, z: '#,##0' }, 'Total driving segments'],
+                    ['Commercial Kilometers (Deductible)', { t: 'n', v: bizKm, f: `SUMIF(${ref}!J2:J${lastRow},"<>Personal",${ref}!G2:G${lastRow})`, z: '#,##0.00' }, 'Site visits, materials, dispatch, quotes & fleet maintenance'],
+                    ['Personal Kilometers (Non-Deductible)', { t: 'n', v: persKm, f: `SUMIF(${ref}!J2:J${lastRow},"Personal",${ref}!G2:G${lastRow})`, z: '#,##0.00' }, 'Out-of-region travel, personal errands & weekend gym'],
+                    ['CRA Commercial Business-Use %', { t: 'n', v: bizRatio, f: 'B13/B10', z: '0.00%' }, 'Deductible corporate proportion under ITA s. 18(1)(a)']
+                ];
 
-            const headers = [
-                'Date', 'Day', 'Departure', 'Arrival', 'Origin', 'Destination',
-                'Distance (km)', 'Odo Start', 'Odo End', 'Purpose', 'Category', 'QBO Audit Corroboration'
-            ];
-            const logRows = [headers];
-            processedTrips.forEach(r => {
-                logRows.push([
-                    r.Date, r.Day, r.Departure, r.Arrival, r.Origin, r.Destination,
-                    r.Distance, r.OdoStart, r.OdoEnd, r.Purpose, r.Category, r.QBO
-                ]);
-            });
+                const wsSum = XLSX.utils.aoa_to_sheet(sumData);
+                wsSum['!cols'] = [{ wch: 38 }, { wch: 20 }, { wch: 52 }];
+                XLSX.utils.book_append_sheet(wb, wsSum, 'Executive Summary');
 
-            const fStart = lastRow + 2;
-            logRows.push([]);
-            logRows.push(['', '', '', '', '', 'TOTAL LOGGED KILOMETERS:', { t: 'n', v: totalKm, f: `SUM(G2:G${lastRow})`, z: '#,##0.00' }]);
-            logRows.push(['', '', '', '', '', 'COMMERCIAL KILOMETERS (DEDUCTIBLE):', { t: 'n', v: bizKm, f: `SUMIF(J2:J${lastRow},"<>Personal",G2:G${lastRow})`, z: '#,##0.00' }]);
-            logRows.push(['', '', '', '', '', 'PERSONAL KILOMETERS (NON-DEDUCTIBLE):', { t: 'n', v: persKm, f: `SUMIF(J2:J${lastRow},"Personal",G2:G${lastRow})`, z: '#,##0.00' }]);
-            logRows.push(['', '', '', '', '', 'COMMERCIAL BUSINESS-USE PERCENTAGE:', { t: 'n', v: bizRatio, f: `G${fStart + 1}/G${fStart}`, z: '0.00%' }]);
+                const headers = [
+                    'Date', 'Day', 'Departure', 'Arrival', 'Origin', 'Destination',
+                    'Distance (km)', 'Odo Start', 'Odo End', 'Purpose', 'Category', 'QBO Audit Corroboration'
+                ];
+                const logRows = [headers];
+                processedTrips.forEach(r => {
+                    logRows.push([
+                        r.Date, r.Day, r.Departure, r.Arrival, r.Origin, r.Destination,
+                        r.Distance, r.OdoStart, r.OdoEnd, r.Purpose, r.Category, r.QBO
+                    ]);
+                });
 
-            const wsLog = XLSX.utils.aoa_to_sheet(logRows);
-            wsLog['!cols'] = [
-                { wch: 12 }, { wch: 11 }, { wch: 11 }, { wch: 11 }, { wch: 40 }, { wch: 42 },
-                { wch: 15 }, { wch: 13 }, { wch: 13 }, { wch: 32 }, { wch: 28 }, { wch: 34 }
-            ];
-            XLSX.utils.book_append_sheet(wb, wsLog, logSheetName);
+                const fStart = lastRow + 2;
+                logRows.push([]);
+                logRows.push(['', '', '', '', '', 'TOTAL LOGGED KILOMETERS:', { t: 'n', v: totalKm, f: `SUM(G2:G${lastRow})`, z: '#,##0.00' }]);
+                logRows.push(['', '', '', '', '', 'COMMERCIAL KILOMETERS (DEDUCTIBLE):', { t: 'n', v: bizKm, f: `SUMIF(J2:J${lastRow},"<>Personal",G2:G${lastRow})`, z: '#,##0.00' }]);
+                logRows.push(['', '', '', '', '', 'PERSONAL KILOMETERS (NON-DEDUCTIBLE):', { t: 'n', v: persKm, f: `SUMIF(J2:J${lastRow},"Personal",G2:G${lastRow})`, z: '#,##0.00' }]);
+                logRows.push(['', '', '', '', '', 'COMMERCIAL BUSINESS-USE PERCENTAGE:', { t: 'n', v: bizRatio, f: `G${fStart + 1}/G${fStart}`, z: '0.00%' }]);
 
-            XLSX.writeFile(wb, `TIG_Mileage_Logbook_${targetYear}_CRA_Ready.xlsx`);
+                const wsLog = XLSX.utils.aoa_to_sheet(logRows);
+                wsLog['!cols'] = [
+                    { wch: 12 }, { wch: 11 }, { wch: 11 }, { wch: 11 }, { wch: 40 }, { wch: 42 },
+                    { wch: 15 }, { wch: 13 }, { wch: 13 }, { wch: 32 }, { wch: 28 }, { wch: 34 }
+                ];
+                XLSX.utils.book_append_sheet(wb, wsLog, logSheetName);
+
+                XLSX.writeFile(wb, `TIG_Mileage_Logbook_${targetYear}_CRA_Ready.xlsx`);
+            } catch (err) {
+                downloadCsvFallback(targetYear, { openOdo, closeOdo, totalKm, bizKm, bizRatio });
+            }
         });
     })();
     </script>
