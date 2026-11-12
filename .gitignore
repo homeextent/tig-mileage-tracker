@@ -1,0 +1,14 @@
+# Block raw Google Timeline GPS exports (50MB+ personal/client movement history)
+Timeline*.json
+location-history*.json
+*timeline*.json
+
+# Block QuickBooks Online exports & accounting spreadsheets
+*.csv
+*.xls
+*.xlsx
+
+# Block local archives & OS clutter
+*.zip
+.DS_Store
+Thumbs.db
