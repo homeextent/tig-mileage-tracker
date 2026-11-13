@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
  * Description: CRA-compliant mileage engine & REST API collector for Homeextent Inc. (2019 Ram 1500 Rebel). Supports Pixel 9 Bluetooth/Android Auto live sync, Google Timeline JSON, QBO receipt corroboration, and CPA-ready Excel workbooks.
- * Version: 3.3.0
+ * Version: 3.3.1
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.3.0');
+define('TIG_MILEAGE_VERSION', '3.3.1');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
 define('TIG_MILEAGE_TABLE', 'tig_mileage_trips');
 
@@ -2561,6 +2561,14 @@ function tig_mileage_tracker_admin_page() {
             } catch (err) {
                 downloadCsvFallback(targetYear, { openOdo, closeOdo, totalKm, bizKm, bizRatio });
             }
+        });
+        // Auto-load stored Pixel 9 trips on page load & year change if available
+        const liveCountBadge = document.getElementById('live-trips-count-badge');
+        if (liveCountBadge && parseInt(liveCountBadge.textContent || '0', 10) > 0) {
+            setTimeout(() => document.getElementById('btn-load-live-trips')?.click(), 120);
+        }
+        document.getElementById('select-year')?.addEventListener('change', () => {
+            setTimeout(() => document.getElementById('btn-load-live-trips')?.click(), 120);
         });
     })();
     </script>
