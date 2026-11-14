@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
  * Description: CRA-compliant mileage engine & REST API collector for Homeextent Inc. (2019 Ram 1500 Rebel). Supports Pixel 9 Bluetooth/Android Auto live sync, Google Timeline JSON, QBO receipt corroboration, and CPA-ready Excel workbooks.
- * Version: 3.3.1
+ * Version: 3.3.2
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.3.1');
+define('TIG_MILEAGE_VERSION', '3.3.2');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
 define('TIG_MILEAGE_TABLE', 'tig_mileage_trips');
 
@@ -236,8 +236,7 @@ function tig_mileage_get_default_locations() {
 function tig_mileage_get_default_anchors() {
     return array(
         '2025' => array('date' => '2025-12-31', 'odo' => 124644.1, 'mode' => 'backward'),
-        '2026' => array('date' => '2026-11-10', 'odo' => 136111.0, 'mode' => 'pivot'),
-        '2027' => array('date' => '2027-01-01', 'odo' => 136111.0, 'mode' => 'forward')
+        '2026' => array('date' => '2026-11-13', 'odo' => 136220.0, 'mode' => 'pivot')
     );
 }
 
@@ -254,6 +253,17 @@ function tig_mileage_get_anchors_or_default() {
     $anchors = get_option('tig_mileage_anchors');
     if (!is_array($anchors) || empty($anchors)) {
         $anchors = tig_mileage_get_default_anchors();
+        update_option('tig_mileage_anchors', $anchors, false);
+    }
+    $today = wp_date('Y-m-d');
+    $cleaned = false;
+    foreach ($anchors as $yr => $cfg) {
+        if (!empty($cfg['date']) && $cfg['date'] > $today) {
+            unset($anchors[$yr]);
+            $cleaned = true;
+        }
+    }
+    if ($cleaned) {
         update_option('tig_mileage_anchors', $anchors, false);
     }
     return $anchors;
@@ -938,12 +948,17 @@ function tig_mileage_ajax_live_trips_action() {
         $id = (int) ($_POST['id'] ?? 0);
         $purpose = sanitize_text_field((string) ($_POST['purpose'] ?? ''));
         $category = sanitize_text_field((string) ($_POST['category'] ?? ''));
+        $origin = sanitize_text_field((string) ($_POST['origin'] ?? ''));
+        $destination = sanitize_text_field((string) ($_POST['destination'] ?? ''));
         if ($id > 0) {
-            $wpdb->update(
-                $table_name,
-                array('manual_purpose' => $purpose, 'manual_category' => $category),
-                array('id' => $id)
-            );
+            $data = array('manual_purpose' => $purpose, 'manual_category' => $category);
+            if ($origin !== '') {
+                $data['origin_raw'] = $origin;
+            }
+            if ($destination !== '') {
+                $data['dest_raw'] = $destination;
+            }
+            $wpdb->update($table_name, $data, array('id' => $id));
         }
         wp_send_json_success(array('message' => 'Live trip updated.'));
     } elseif ($op === 'delete') {
@@ -1156,6 +1171,30 @@ function tig_mileage_tracker_admin_page() {
                     </div>
                 </div>
 
+                <!-- Full Interactive CRA Vehicle Logbook Preview & Inline Editor -->
+                <div id="logbook-preview-section" style="display: none; margin-bottom: 20px; border: 1px solid #c3c4c7; background: #fff; border-radius: 6px; padding: 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
+                        <strong style="color: #1F497D; font-size: 14px;">CRA Vehicle Logbook (<span id="logbook-preview-year">2026</span>) &mdash; <span id="logbook-preview-count">0</span> Trips</strong>
+                        <span style="font-size: 12px; color: #646970;">Edit Origin, Destination, Work/Personal status, or Purpose inline below; odometers and Excel export update live.</span>
+                    </div>
+                    <div style="max-height: 440px; overflow: auto; border: 1px solid #e5e5e5;">
+                        <table class="widefat striped" style="border: none; font-size: 12px;">
+                            <thead>
+                                <tr>
+                                    <th>Date &amp; Time</th>
+                                    <th>Origin</th>
+                                    <th>Destination</th>
+                                    <th>KM</th>
+                                    <th>Odometer</th>
+                                    <th>Type</th>
+                                    <th>CRA Purpose</th>
+                                </tr>
+                            </thead>
+                            <tbody id="logbook-preview-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <button id="btn-download-xlsx" disabled style="width: 100%; background: #1F497D; color: #fff; border: none; border-radius: 5px; padding: 12px; font-size: 14px; font-weight: 600; cursor: pointer; opacity: 0.5;">
                     <span class="dashicons dashicons-download" style="vertical-align: middle; margin-right: 6px;"></span>
                     <span id="btn-download-label">Download 2026 CRA-Ready Logbook (.xlsx)</span>
@@ -1231,7 +1270,7 @@ function tig_mileage_tracker_admin_page() {
                         </div>
                         <div style="font-size: 12px; margin-bottom: 12px;">
                             <strong>2027 Anchor (<?php echo esc_html($anchors['2027']['date'] ?? '2027-01-01'); ?>):</strong>
-                            <input type="number" step="0.1" id="anchor-2027-odo" value="<?php echo esc_attr($anchors['2027']['odo']); ?>" style="width: 100px; margin-left: 6px;" /> km
+                            <input type="number" step="0.1" id="anchor-2027-odo" value="<?php echo isset($anchors['2027']['odo']) ? esc_attr($anchors['2027']['odo']) : ''; ?>" placeholder="Set Jan 1, 2027" style="width: 115px; margin-left: 6px;" /> km
                         </div>
                         <button type="button" id="btn-save-anchors" class="button">Update Anchors</button>
 
@@ -1548,8 +1587,14 @@ function tig_mileage_tracker_admin_page() {
         });
 
         document.getElementById('btn-save-anchors').addEventListener('click', async function() {
-            odoAnchors['2026'].odo = parseFloat(document.getElementById('anchor-2026-odo').value) || 136111.0;
-            odoAnchors['2027'].odo = parseFloat(document.getElementById('anchor-2027-odo').value) || 136111.0;
+            if (!odoAnchors['2026']) odoAnchors['2026'] = { date: '2026-11-13', odo: 136220.0, mode: 'pivot' };
+            odoAnchors['2026'].odo = parseFloat(document.getElementById('anchor-2026-odo').value) || odoAnchors['2026'].odo;
+            const val2027 = parseFloat(document.getElementById('anchor-2027-odo').value);
+            if (!isNaN(val2027) && val2027 > 0) {
+                odoAnchors['2027'] = { date: (odoAnchors['2027'] && odoAnchors['2027'].date) || '2027-01-01', odo: val2027, mode: 'forward' };
+            } else {
+                delete odoAnchors['2027'];
+            }
             const ok = await persistSettings();
             if (ok) {
                 alert('Odometer anchors saved to WordPress database.');
@@ -1975,6 +2020,103 @@ function tig_mileage_tracker_admin_page() {
             } else {
                 revSec.style.display = 'none';
             }
+
+            // Render Full CRA Vehicle Logbook Preview & Inline Editor
+            const logSec = document.getElementById('logbook-preview-section');
+            const logBody = document.getElementById('logbook-preview-tbody');
+            const targetYear = document.getElementById('select-year').value;
+            if (processedTrips.length > 0 && logSec && logBody) {
+                logSec.style.display = 'block';
+                document.getElementById('logbook-preview-year').innerText = targetYear;
+                document.getElementById('logbook-preview-count').innerText = processedTrips.length;
+                logBody.innerHTML = '';
+
+                processedTrips.forEach((r, idx) => {
+                    const isPers = String(r.Purpose || '').toLowerCase().includes('personal');
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td style="white-space:nowrap;"><strong>${escapeHtml(r.Date)}</strong><br><small>${escapeHtml(r.Departure)} &ndash; ${escapeHtml(r.Arrival)}</small></td>
+                        <td style="min-width:175px;"><input type="text" class="tig-log-orig" data-idx="${idx}" value="${escapeHtml(r.Origin)}" style="width:100%; font-size:12px;" /></td>
+                        <td style="min-width:185px;"><input type="text" class="tig-log-dest" data-idx="${idx}" value="${escapeHtml(r.Destination)}" style="width:100%; font-size:12px; font-weight:600;" /></td>
+                        <td style="white-space:nowrap; font-weight:600;">${r.Distance.toFixed(2)}</td>
+                        <td style="white-space:nowrap; font-size:11px; color:#50575e;">${Number(r.OdoStart).toFixed(1)} &rarr; ${Number(r.OdoEnd).toFixed(1)}</td>
+                        <td style="min-width:115px;">
+                            <select class="tig-log-type" data-idx="${idx}" style="width:100%; font-size:12px; font-weight:600;">
+                                <option value="Work" ${!isPers ? 'selected' : ''}>Work</option>
+                                <option value="Personal" ${isPers ? 'selected' : ''}>Personal</option>
+                            </select>
+                        </td>
+                        <td style="min-width:175px;">
+                            <select class="tig-log-purpose" data-idx="${idx}" style="width:100%; font-size:12px;">
+                                ${buildSelectOptions(PURPOSE_OPTIONS.concat(['Review']), r.Purpose)}
+                            </select>
+                        </td>
+                    `;
+                    logBody.appendChild(tr);
+                });
+
+                async function syncEditedLogRow(idx) {
+                    const item = processedTrips[idx];
+                    chainOdometers(processedTrips, targetYear);
+                    refreshSummaryAndReview();
+                    if (item && item.liveId) {
+                        const val = item.Purpose === 'Review' ? '' : item.Purpose;
+                        await fetch(AJAX_URL, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: new URLSearchParams({
+                                action: 'tig_live_trips_action',
+                                security: NONCE,
+                                op: 'update',
+                                id: item.liveId,
+                                origin: item.Origin,
+                                destination: item.Destination,
+                                purpose: val,
+                                category: item.Category
+                            })
+                        });
+                        showSaveToast('✓ Logbook row saved');
+                    }
+                }
+
+                document.querySelectorAll('.tig-log-orig').forEach(inp => {
+                    inp.addEventListener('change', function() {
+                        const idx = parseInt(this.dataset.idx, 10);
+                        processedTrips[idx].Origin = this.value.trim();
+                        syncEditedLogRow(idx);
+                    });
+                });
+                document.querySelectorAll('.tig-log-dest').forEach(inp => {
+                    inp.addEventListener('change', function() {
+                        const idx = parseInt(this.dataset.idx, 10);
+                        processedTrips[idx].Destination = this.value.trim();
+                        syncEditedLogRow(idx);
+                    });
+                });
+                document.querySelectorAll('.tig-log-type').forEach(sel => {
+                    sel.addEventListener('change', function() {
+                        const idx = parseInt(this.dataset.idx, 10);
+                        if (this.value === 'Personal') {
+                            processedTrips[idx].Purpose = 'Personal';
+                            processedTrips[idx].Category = 'Personal (Manual)';
+                        } else if (processedTrips[idx].Purpose === 'Personal') {
+                            processedTrips[idx].Purpose = 'Project Site Visit';
+                            processedTrips[idx].Category = 'Project Site Visit';
+                        }
+                        syncEditedLogRow(idx);
+                    });
+                });
+                document.querySelectorAll('.tig-log-purpose').forEach(sel => {
+                    sel.addEventListener('change', function() {
+                        const idx = parseInt(this.dataset.idx, 10);
+                        processedTrips[idx].Purpose = this.value;
+                        processedTrips[idx].Category = this.value === 'Personal' ? 'Personal (Manual)' : this.value;
+                        syncEditedLogRow(idx);
+                    });
+                });
+            } else if (logSec) {
+                logSec.style.display = 'none';
+            }
         }
 
         document.getElementById('continuity-badge').addEventListener('click', function() {
@@ -2014,7 +2156,9 @@ function tig_mileage_tracker_admin_page() {
             try {
                 const liveRows = await fetchLiveTripsForYear(targetYear);
                 if (!liveRows.length) {
-                    setProgress(100, `No live Pixel 9 trips found for ${targetYear} yet.`);
+                    processedTrips = [];
+                    refreshSummaryAndReview();
+                    setProgress(100, `No live Pixel 9 trips stored for ${targetYear} yet (drop historical Timeline.json or select 2026).`);
                     document.getElementById('progress-bar').style.background = '#d97706';
                     return;
                 }
@@ -2049,6 +2193,7 @@ function tig_mileage_tracker_admin_page() {
                     }
 
                     deduped.push({
+                        liveId: t.id,
                         Date: t.date,
                         Day: t.day,
                         Departure: t.departure,
@@ -2103,28 +2248,61 @@ function tig_mileage_tracker_admin_page() {
                 }
                 tbody.innerHTML = '';
                 rows.forEach(r => {
+                    const isPers = String(r.purpose || '').toLowerCase() === 'personal';
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
-                        <td>${escapeHtml(r.date)}<br><small>${escapeHtml(r.departure)} &ndash; ${escapeHtml(r.arrival)}</small></td>
+                        <td style="white-space:nowrap;">${escapeHtml(r.date)}<br><small>${escapeHtml(r.departure)} &ndash; ${escapeHtml(r.arrival)}</small></td>
                         <td><span style="font-size:11px; background:#eef4fb; padding:2px 6px; border-radius:3px;">${escapeHtml(r.trigger_source)}</span></td>
-                        <td><small>${escapeHtml(r.origin)}</small><br>&rarr; <strong>${escapeHtml(r.destination)}</strong></td>
-                        <td>${Number(r.gps_km).toFixed(2)}</td>
-                        <td>
-                            <select class="tig-live-purpose" data-id="${r.id}" style="font-size:12px;">
+                        <td style="min-width:230px;">
+                            <input type="text" class="tig-live-orig" data-id="${r.id}" value="${escapeHtml(r.origin)}" placeholder="Origin" style="width:100%; font-size:12px; margin-bottom:4px;" />
+                            <input type="text" class="tig-live-dest" data-id="${r.id}" value="${escapeHtml(r.destination)}" placeholder="Destination" style="width:100%; font-size:12px; font-weight:600;" />
+                        </td>
+                        <td style="white-space:nowrap;">${Number(r.gps_km).toFixed(2)}</td>
+                        <td style="min-width:190px;">
+                            <select class="tig-live-type" data-id="${r.id}" style="width:100%; font-size:12px; margin-bottom:4px; font-weight:600;">
+                                <option value="Work" ${!isPers ? 'selected' : ''}>Work (Deductible)</option>
+                                <option value="Personal" ${isPers ? 'selected' : ''}>Personal (Non-Deductible)</option>
+                            </select>
+                            <select class="tig-live-purpose" data-id="${r.id}" style="width:100%; font-size:12px;">
                                 ${buildSelectOptions(PURPOSE_OPTIONS.concat(['Review']), r.purpose)}
                             </select>
                         </td>
-                        <td>
-                            <button type="button" class="button button-small tig-live-del" data-id="${r.id}" style="color:#b32d2e;">Delete</button>
+                        <td style="white-space:nowrap;">
+                            <button type="button" class="button button-primary button-small tig-live-save" data-id="${r.id}" style="margin-bottom:4px; display:block; width:100%;">Save</button>
+                            <button type="button" class="button button-small tig-live-del" data-id="${r.id}" style="color:#b32d2e; display:block; width:100%;">Delete</button>
                         </td>
                     `;
                     tbody.appendChild(tr);
                 });
 
+                document.querySelectorAll('.tig-live-type').forEach(sel => {
+                    sel.addEventListener('change', function() {
+                        const row = this.closest('tr');
+                        const purpSel = row.querySelector('.tig-live-purpose');
+                        if (this.value === 'Personal') {
+                            purpSel.value = 'Personal';
+                        } else if (purpSel.value === 'Personal') {
+                            purpSel.value = 'Project Site Visit';
+                        }
+                    });
+                });
+
                 document.querySelectorAll('.tig-live-purpose').forEach(sel => {
-                    sel.addEventListener('change', async function() {
+                    sel.addEventListener('change', function() {
+                        const row = this.closest('tr');
+                        const typeSel = row.querySelector('.tig-live-type');
+                        typeSel.value = (this.value === 'Personal') ? 'Personal' : 'Work';
+                    });
+                });
+
+                document.querySelectorAll('.tig-live-save').forEach(btn => {
+                    btn.addEventListener('click', async function() {
                         const id = this.dataset.id;
-                        const val = this.value === 'Review' ? '' : this.value;
+                        const row = this.closest('tr');
+                        const origVal = row.querySelector('.tig-live-orig').value.trim();
+                        const destVal = row.querySelector('.tig-live-dest').value.trim();
+                        const purpRaw = row.querySelector('.tig-live-purpose').value;
+                        const val = purpRaw === 'Review' ? '' : purpRaw;
                         await fetch(AJAX_URL, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -2133,11 +2311,14 @@ function tig_mileage_tracker_admin_page() {
                                 security: NONCE,
                                 op: 'update',
                                 id: id,
+                                origin: origVal,
+                                destination: destVal,
                                 purpose: val,
                                 category: val === 'Personal' ? 'Personal (Admin)' : val
                             })
                         });
-                        showSaveToast('✓ Live trip purpose updated');
+                        showSaveToast('✓ Trip address & classification saved');
+                        document.getElementById('btn-load-live-trips')?.click();
                     });
                 });
 
