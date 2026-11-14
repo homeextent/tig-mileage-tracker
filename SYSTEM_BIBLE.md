@@ -37,3 +37,12 @@ QuickBooks Online stores both retail supply counters and on-site subcontractors 
 * **Client-Side JSON Streaming:** `FileReader` parses 50 MB+ `Timeline.json` / `location-history.json` files inside browser memory, eliminating SiteGround PHP `upload_max_filesize` and `max_execution_time` timeouts.
 * **Two-Tier Geo-Cache:** Loads `data/geo_cache.json` + WordPress `wp_options` (`tig_mileage_runtime_geocache`). Any brand-new coordinates encountered in 2027+ are reverse-geocoded via Nominatim (1.1s throttle) and persisted via `wp_ajax_tig_save_geocache`.
 * **Excel Workbook Engine:** SheetJS (`xlsx`) generates a 2-tab `.xlsx` workbook (`Executive Summary` + `Vehicle Log`) embedding both live Excel formulas (`SUM`, `SUMIF`, `COUNTIF`) and pre-computed cached values.
+
+---
+
+## Current Production Architecture (v3.3.2)
+
+- **Tab 1 Auto-Load & Inline Logbook Editor:** Stored Pixel 9 drives (`wp_tig_mileage_trips`) auto-load on page open and tax-year switch. Step 3 renders an interactive CRA Vehicle Logbook table allowing inline edits to `Origin`, `Destination`, `Type` (`Work` / `Personal`), and `CRA Purpose` with real-time odometer chaining and Excel export updates.
+- **Stored Pixel 9 Trips Manager:** `Inspect / Edit Stored Trips` supports inline editing of `origin_raw`, `dest_raw`, `manual_purpose`, and `manual_category` via `wp_ajax_tig_live_trips_action`.
+- **Odometer Anchors (`tig_mileage_anchors`):** Stores verified historical/current readings only (`2025-12-31` backward anchor at `124,644.1 km` and `2026-11-13` pivot anchor at `136,220.0 km`); future calendar-year anchors remain unset until that date arrives.
+- **Deployment Packaging (`./build.sh`):** Outputs `/media/jeremy/MEDIA/GITHUB/tig-mileage-tracker.zip` containing a single top-level `tig-mileage-tracker/` directory for seamless WordPress in-place replacement.

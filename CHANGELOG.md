@@ -2,6 +2,20 @@
 
 All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPress plugin are documented here.
 
+
+## [3.3.2] - 2026-11-13
+### Added
+- **Interactive CRA Vehicle Logbook Preview & Inline Editor (Tab 1, Step 3):** Displays the full chained logbook table (`Date & Time`, editable `Origin`, editable `Destination`, `KM`, chained `Odo Start -> Odo End`, `Work`/`Personal` type, and `CRA Purpose`) directly above the `.xlsx` download button with live odometer and KPI recalculation.
+- **Full Inline Editing in Stored Pixel 9 Trips Drawer:** Added editable `Origin` and `Destination` inputs, `Work (Deductible)` / `Personal (Non-Deductible)` selector, `CRA Purpose` dropdown, and `Save` button persisted via `tig_live_trips_action`.
+
+### Fixed
+- **Removed Premature 2027 Placeholder Anchor:** Stripped pre-seeded future-dated (`2027-01-01`) anchor defaults and added a server-side future-date guard in `tig_mileage_get_anchors_or_default()`.
+- **WordPress In-Place Update Packaging (`build.sh`):** Packaged files under a single top-level `tig-mileage-tracker/` folder into an unversioned `tig-mileage-tracker.zip` so WordPress always offers **Replace current with uploaded**.
+
+## [3.3.1] - 2026-11-13
+### Added
+- **Auto-Load Stored Pixel 9 Drives:** Tab 1 automatically loads and renders stored Pixel 9 trips on page open and when switching tax years.
+
 ## [3.3.0] - 2026-11-12
 ### Added
 - **WordPress REST API (`/wp-json/tig-mileage/v1/`):** Added `GET /status`, `POST /trips`, `PATCH /trips/{id}`, `POST /locations` (1-tap GPS site pinning), and `POST /anchors` (odometer check-ins with WordPress Media Library cluster photo upload), secured via WordPress Application Passwords with SiteGround `HTTP_AUTHORIZATION` / `X-TIG-Auth` header fallback.
