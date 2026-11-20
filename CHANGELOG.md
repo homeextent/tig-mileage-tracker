@@ -3,6 +3,11 @@
 All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPress plugin are documented here.
 
 
+
+## [3.4.0] - 2026-11-19
+### Added
+- **Hybrid Google Timeline + Live Pixel 9 Logbook Merge:** Importing a Google Timeline `.json` into **Source B** caches the baseline for that year and automatically merges/deduplicates it (`±5 min`, `±0.35 km`) with all stored Pixel 9 trips before chaining odometers.
+
 ## [3.3.2] - 2026-11-13
 ### Added
 - **Interactive CRA Vehicle Logbook Preview & Inline Editor (Tab 1, Step 3):** Displays the full chained logbook table (`Date & Time`, editable `Origin`, editable `Destination`, `KM`, chained `Odo Start -> Odo End`, `Work`/`Personal` type, and `CRA Purpose`) directly above the `.xlsx` download button with live odometer and KPI recalculation.
