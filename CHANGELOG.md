@@ -12,6 +12,12 @@ All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPres
 
 
 
+
+## [3.6.0] - 2026-11-19
+### Added
+- **Quick Review Queue Bulk Selection & Batch Classification:** Added row checkboxes, `Select Visible`, `Select All N` one-click address grouping, live address filtering, and batched MySQL persistence (`op: 'bulk_update'`).
+- **Bulk Permanent Rule Creation:** Added `Also save as Permanent Rule` directly on the Quick Review Queue bulk bar plus a 1-click `+ Bulk Add 8 Recommended Rules` action for Niagara personal/fuel/supply stops.
+
 ## [3.5.1] - 2026-11-19
 ### Fixed
 - **QBO Grouped Supplier Report Header Detection:** Prevented `'Account full name'` on QBO's `Transaction List by Supplier.csv` header row from triggering flat-table detection so all 199 supplier/fuel receipts across 160 commercial dates index and save to WordPress `wp_options` (`tig_mileage_qbo_index`) permanently.

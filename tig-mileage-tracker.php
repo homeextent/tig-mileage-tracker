@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
  * Description: CRA-compliant mileage engine & REST API collector for Homeextent Inc. (2019 Ram 1500 Rebel). Supports Pixel 9 Bluetooth/Android Auto live sync, Google Timeline JSON, QBO receipt corroboration, and CPA-ready Excel workbooks.
- * Version: 3.5.1
+ * Version: 3.6.0
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.5.1');
+define('TIG_MILEAGE_VERSION', '3.6.0');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
 define('TIG_MILEAGE_TABLE', 'tig_mileage_trips');
 
@@ -965,6 +965,37 @@ function tig_mileage_ajax_live_trips_action() {
             $wpdb->update($table_name, $data, array('id' => $id));
         }
         wp_send_json_success(array('message' => 'Live trip updated.'));
+    } elseif ($op === 'bulk_update') {
+        $items = json_decode(wp_unslash($_POST['items'] ?? '[]'), true);
+        $updated = 0;
+        if (is_array($items) && !empty($items)) {
+            $wpdb->query('START TRANSACTION');
+            foreach ($items as $it) {
+                if (!is_array($it)) {
+                    continue;
+                }
+                $id = (int) ($it['id'] ?? 0);
+                if ($id <= 0) {
+                    continue;
+                }
+                $purpose = sanitize_text_field((string) ($it['purpose'] ?? ''));
+                $category = sanitize_text_field((string) ($it['category'] ?? ''));
+                $data = array(
+                    'manual_purpose'  => $purpose,
+                    'manual_category' => $category
+                );
+                if (!empty($it['origin'])) {
+                    $data['origin_raw'] = sanitize_text_field((string) $it['origin']);
+                }
+                if (!empty($it['destination'])) {
+                    $data['dest_raw'] = sanitize_text_field((string) $it['destination']);
+                }
+                $wpdb->update($table_name, $data, array('id' => $id));
+                $updated++;
+            }
+            $wpdb->query('COMMIT');
+        }
+        wp_send_json_success(array('updated' => $updated));
     } elseif ($op === 'delete') {
         $id = (int) ($_POST['id'] ?? 0);
         if ($id > 0) {
@@ -1381,18 +1412,57 @@ function tig_mileage_tracker_admin_page() {
 
                 <!-- Interactive Review Queue (Only appears if Review trips exist) -->
                 <div id="review-section" style="display: none; margin-bottom: 20px; border: 1px solid #f0c36d; background: #fffdf5; border-radius: 6px; padding: 16px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                        <strong style="color: #8a6d3b; font-size: 14px;">Quick Review Queue (<span id="review-count">0</span> Uncategorized Trips)</strong>
-                        <span style="font-size: 12px; color: #646970;">Adjust any trip purpose below; changes save automatically to WordPress DB and update summary metrics live.</span>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px; flex-wrap: wrap;">
+                        <div>
+                            <strong style="color: #8a6d3b; font-size: 14px;">Quick Review Queue (<span id="review-count">0</span> Uncategorized Trips)</strong>
+                            <span style="font-size: 12px; color: #646970; margin-left: 8px;">Select individual rows or click <strong>Select Same</strong> to batch-classify and save permanent rules.</span>
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                            <input type="search" id="rev-filter-search" placeholder="Filter address (e.g. scott, lakeport)..." style="width: 220px; font-size: 12px;" />
+                            <button type="button" id="btn-rev-seed-recommended" class="button button-small">+ Bulk Add 8 Recommended Rules</button>
+                        </div>
                     </div>
-                    <div style="max-height: 280px; overflow-y: auto; border: 1px solid #e5e5e5; background: #fff;">
+
+                    <!-- Bulk Action Bar -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; background: #fff8e5; border: 1px solid #e6c67c; border-radius: 5px; padding: 8px 12px; margin-bottom: 10px;">
+                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                            <label style="font-size: 12px; font-weight: 600; cursor: pointer;">
+                                <input type="checkbox" id="rev-select-all" /> Select Visible
+                            </label>
+                            <span id="rev-selected-badge" style="font-size: 12px; font-weight: 600; color: #1F497D; background: #e8f0fe; padding: 2px 8px; border-radius: 10px;">0 selected</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <select id="rev-bulk-purpose" style="font-size: 12px; font-weight: 600;">
+                                <option value="Personal">Personal (Non-Deductible)</option>
+                                <option value="Project Site Visit">Project Site Visit</option>
+                                <option value="Project Development">Project Development</option>
+                                <option value="Materials / Supplies">Materials / Supplies</option>
+                                <option value="Quote / Estimate">Quote / Estimate</option>
+                                <option value="Tools / Repair">Tools / Repair</option>
+                                <option value="Vehicle Maintenance & Parts">Vehicle Maintenance &amp; Parts</option>
+                                <option value="Return to Head Office / Dispatch">Return to Head Office / Dispatch</option>
+                            </select>
+                            <label style="font-size: 12px; color: #1d2327; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                                <input type="checkbox" id="rev-bulk-save-rule" /> Also save as Permanent Rule
+                            </label>
+                            <select id="rev-bulk-rule-year" style="font-size: 12px;">
+                                <option value="ALL" selected>All Years (ALL)</option>
+                                <option value="2026">2026 Only</option>
+                                <option value="2027">2027 Only</option>
+                            </select>
+                            <button type="button" id="btn-rev-bulk-apply" class="button button-primary button-small">Apply to Selected</button>
+                        </div>
+                    </div>
+
+                    <div style="max-height: 320px; overflow-y: auto; border: 1px solid #e5e5e5; background: #fff;">
                         <table class="widefat striped" style="border: none;">
                             <thead>
                                 <tr>
-                                    <th>Date</th>
+                                    <th style="width: 30px;"></th>
+                                    <th style="width: 95px;">Date</th>
                                     <th>Destination</th>
-                                    <th>KM</th>
-                                    <th>Purpose</th>
+                                    <th style="width: 65px;">KM</th>
+                                    <th style="width: 195px;">Purpose</th>
                                 </tr>
                             </thead>
                             <tbody id="review-tbody"></tbody>
@@ -1486,7 +1556,10 @@ function tig_mileage_tracker_admin_page() {
                                 </div>
                             </div>
                         </div>
-                        <button type="button" id="btn-add-location" class="button button-primary" style="margin-top: 14px;">+ Save Location to Rulebook</button>
+                        <div style="margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                            <button type="button" id="btn-add-location" class="button button-primary">+ Save Location to Rulebook</button>
+                            <button type="button" id="btn-seed-recommended-tab2" class="button">+ Bulk Add 8 Recommended Rules</button>
+                        </div>
                     </div>
 
                     <!-- Odometer Anchors & Full Backup -->
@@ -2355,6 +2428,189 @@ function tig_mileage_tracker_admin_page() {
             }
         }
 
+        function updateReviewSelectionCount() {
+            const checked = document.querySelectorAll('.tig-rev-chk:checked').length;
+            const badge = document.getElementById('rev-selected-badge');
+            if (badge) badge.innerText = `${checked} selected`;
+        }
+
+        function deriveRuleFromDestination(destStr, purpose, ruleYear) {
+            const raw = String(destStr || '').trim();
+            if (!raw || /^-?\d+\.\d+,\s*-?\d+\.\d+$/.test(raw)) return null;
+            const parts = raw.split(',').map(p => p.trim()).filter(Boolean);
+            if (!parts.length) return null;
+
+            const genericWords = new Set(['st. catharines', 'niagara falls', 'niagara region', 'ontario', 'canada', 'port dalhousie', 'merriton', 'scottlea', 'grantham', 'henley', 'welland', 'thorold']);
+            let displayName = parts[0];
+            if (/^\d+$/.test(parts[0]) && parts[1]) {
+                displayName = `${parts[0]} ${parts[1]}`;
+            } else if (parts[1] && !genericWords.has(parts[1].toLowerCase())) {
+                displayName = `${parts[0]} (${parts[1]})`;
+            }
+
+            const kwCandidates = [];
+            if (/^\d+$/.test(parts[0]) && parts[1]) {
+                kwCandidates.push(`${parts[0]} ${parts[1]}`.toLowerCase());
+            } else if (!genericWords.has(parts[0].toLowerCase()) && !/^\d+$/.test(parts[0])) {
+                kwCandidates.push(parts[0].toLowerCase());
+            }
+            if (parts[1] && !genericWords.has(parts[1].toLowerCase()) && !/^\d+$/.test(parts[1])) {
+                const second = parts[1].toLowerCase();
+                if (!kwCandidates.some(k => k.includes(second))) kwCandidates.push(second);
+            }
+            const keywords = cleanKeywordInput(kwCandidates.join(', '));
+            if (!keywords) return null;
+
+            return {
+                id: 'loc_' + Date.now() + '_' + Math.floor(Math.random() * 900 + 100),
+                name: displayName,
+                keywords: keywords,
+                purpose: purpose,
+                category: purpose === 'Personal' ? 'Personal (Rule)' : purpose,
+                year: ruleYear || 'ALL'
+            };
+        }
+
+        async function persistBulkTripUpdates(indices) {
+            const payload = [];
+            indices.forEach(idx => {
+                const item = processedTrips[idx];
+                if (!item || !item.liveId) return;
+                payload.push({
+                    id: item.liveId,
+                    origin: item.Origin,
+                    destination: item.Destination,
+                    purpose: item.Purpose === 'Review' ? '' : item.Purpose,
+                    category: item.Category
+                });
+            });
+            if (!payload.length) return;
+            try {
+                await fetch(AJAX_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({
+                        action: 'tig_live_trips_action',
+                        security: NONCE,
+                        op: 'bulk_update',
+                        items: JSON.stringify(payload)
+                    })
+                });
+            } catch (e) {}
+        }
+
+        async function applyRulesToLoadedTrips() {
+            const targetYear = document.getElementById('select-year').value;
+            const changedIndices = [];
+            processedTrips.forEach((r, idx) => {
+                if (r.Purpose !== 'Review') return;
+                const [destClean, purp, cat] = classifyEndpoint(r.Destination, r.Day, targetYear);
+                if (purp !== 'Review') {
+                    r.Destination = destClean;
+                    r.Purpose = purp;
+                    r.Category = cat;
+                    changedIndices.push(idx);
+                }
+            });
+            if (changedIndices.length > 0) {
+                refreshSummaryAndReview();
+                await persistBulkTripUpdates(changedIndices);
+            }
+            return changedIndices.length;
+        }
+
+        const RECOMMENDED_BULK_RULES = [
+            { name: "McDonald's (Welland Ave)", keywords: 'mcdonald', purpose: 'Personal', category: 'Personal (Food / Coffee)', year: 'ALL' },
+            { name: "East Side Mario's (Fourth Ave)", keywords: 'east side mario', purpose: 'Personal', category: 'Personal (Dining)', year: 'ALL' },
+            { name: "Candie's Ice Creamery (Port Dalhousie)", keywords: 'candie', purpose: 'Personal', category: 'Personal (Food / Coffee)', year: 'ALL' },
+            { name: 'Stag Shop (Scott St)', keywords: 'stag shop', purpose: 'Personal', category: 'Personal (Retail)', year: 'ALL' },
+            { name: 'Lewiston, NY (Cross-Border)', keywords: 'lewiston, new york, 14092', purpose: 'Personal', category: 'Out of Region', year: 'ALL' },
+            { name: 'Esso (Scott St, Port Dalhousie)', keywords: 'esso, scott street', purpose: 'Vehicle Maintenance & Parts', category: 'Fleet Fuel', year: 'ALL' },
+            { name: 'Canadian Tire (Highfield Ave)', keywords: 'canadian tire, highfield', purpose: 'Materials / Supplies', category: 'Canadian Tire', year: 'ALL' },
+            { name: 'Cushman Rd Industrial Corridor', keywords: 'cushman', purpose: 'Materials / Supplies', category: 'Trade Suppliers', year: 'ALL' }
+        ];
+
+        async function seedRecommendedRules() {
+            let addedCount = 0;
+            const existingKwSet = new Set(customLocations.map(l => String(l.keywords || '').toLowerCase().trim()));
+            RECOMMENDED_BULK_RULES.forEach((rule, idx) => {
+                const kwNorm = cleanKeywordInput(rule.keywords);
+                if (!kwNorm || existingKwSet.has(kwNorm)) return;
+                existingKwSet.add(kwNorm);
+                customLocations.unshift({
+                    id: 'loc_rec_' + Date.now() + '_' + idx,
+                    name: rule.name,
+                    keywords: kwNorm,
+                    purpose: rule.purpose,
+                    category: rule.category,
+                    year: rule.year
+                });
+                addedCount++;
+            });
+
+            if (addedCount > 0) {
+                await persistSettings();
+                renderLocationsTable();
+            }
+            const matchedTrips = await applyRulesToLoadedTrips();
+            showSaveToast(`✓ Added ${addedCount} rule${addedCount === 1 ? '' : 's'} & auto-classified ${matchedTrips} trip${matchedTrips === 1 ? '' : 's'}`);
+        }
+
+        document.getElementById('rev-filter-search')?.addEventListener('input', refreshSummaryAndReview);
+        document.getElementById('rev-select-all')?.addEventListener('change', function() {
+            const state = this.checked;
+            document.querySelectorAll('.tig-rev-chk').forEach(chk => { chk.checked = state; });
+            updateReviewSelectionCount();
+        });
+        document.getElementById('btn-rev-seed-recommended')?.addEventListener('click', seedRecommendedRules);
+        document.getElementById('btn-seed-recommended-tab2')?.addEventListener('click', seedRecommendedRules);
+
+        document.getElementById('btn-rev-bulk-apply')?.addEventListener('click', async function() {
+            const checkedBoxes = Array.from(document.querySelectorAll('.tig-rev-chk:checked'));
+            if (!checkedBoxes.length) {
+                alert('Select at least one trip in the Quick Review Queue first (or click "Select All N" next to a recurring address).');
+                return;
+            }
+            const newPurpose = document.getElementById('rev-bulk-purpose').value;
+            const saveAsRule = document.getElementById('rev-bulk-save-rule').checked;
+            const ruleYear = document.getElementById('rev-bulk-rule-year').value;
+            const indices = checkedBoxes.map(chk => parseInt(chk.dataset.idx, 10)).filter(n => !isNaN(n));
+
+            const distinctDests = new Set();
+            indices.forEach(idx => {
+                if (!processedTrips[idx]) return;
+                distinctDests.add(processedTrips[idx].Destination);
+                processedTrips[idx].Purpose = newPurpose;
+                processedTrips[idx].Category = newPurpose === 'Personal' ? 'Personal (Manual)' : newPurpose;
+            });
+
+            let rulesAdded = 0;
+            if (saveAsRule) {
+                const existingKw = new Set(customLocations.map(l => String(l.keywords || '').toLowerCase().trim()));
+                distinctDests.forEach(destStr => {
+                    const ruleObj = deriveRuleFromDestination(destStr, newPurpose, ruleYear);
+                    if (ruleObj && !existingKw.has(ruleObj.keywords)) {
+                        existingKw.add(ruleObj.keywords);
+                        customLocations.unshift(ruleObj);
+                        rulesAdded++;
+                    }
+                });
+                if (rulesAdded > 0) {
+                    await persistSettings();
+                    renderLocationsTable();
+                }
+            }
+
+            refreshSummaryAndReview();
+            await persistBulkTripUpdates(indices);
+
+            if (saveAsRule && rulesAdded > 0) {
+                await applyRulesToLoadedTrips();
+            }
+            document.getElementById('rev-bulk-save-rule').checked = false;
+            showSaveToast(`✓ Updated ${indices.length} trip${indices.length === 1 ? '' : 's'}${rulesAdded > 0 ? ` + saved ${rulesAdded} permanent rule${rulesAdded === 1 ? '' : 's'}` : ''}`);
+        });
+
         function refreshSummaryAndReview() {
             const totalKm = processedTrips.reduce((s, r) => s + r.Distance, 0);
             const bizKm = processedTrips.filter(r => !r.Purpose.toLowerCase().includes('personal')).reduce((s, r) => s + r.Distance, 0);
@@ -2406,28 +2662,62 @@ function tig_mileage_tracker_admin_page() {
             if (reviewRows.length > 0) {
                 revSec.style.display = 'block';
                 document.getElementById('review-count').innerText = reviewRows.length;
+                const searchVal = (document.getElementById('rev-filter-search')?.value || '').trim().toLowerCase();
+                const destFreq = {};
+                reviewRows.forEach(({ r }) => { destFreq[r.Destination] = (destFreq[r.Destination] || 0) + 1; });
+
+                const visibleRows = searchVal
+                    ? reviewRows.filter(({ r }) => `${r.Date} ${r.Destination} ${r.Origin}`.toLowerCase().includes(searchVal))
+                    : reviewRows;
+
                 const tbody = document.getElementById('review-tbody');
                 tbody.innerHTML = '';
-                reviewRows.forEach(({ r, i }) => {
+                visibleRows.forEach(({ r, i }) => {
+                    const cnt = destFreq[r.Destination] || 1;
+                    const sameBtn = cnt > 1
+                        ? `<button type="button" class="button button-small tig-rev-same" data-dest="${escapeHtml(r.Destination)}" style="margin-left:6px; font-size:11px; padding:0 6px; line-height:20px;">Select All ${cnt}</button>`
+                        : '';
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
-                        <td>${escapeHtml(r.Date)}</td>
-                        <td>${escapeHtml(r.Destination)}</td>
-                        <td>${r.Distance.toFixed(2)}</td>
+                        <td><input type="checkbox" class="tig-rev-chk" data-idx="${i}" data-dest="${escapeHtml(r.Destination)}" /></td>
+                        <td style="white-space:nowrap;">${escapeHtml(r.Date)}</td>
+                        <td>${escapeHtml(r.Destination)}${sameBtn}</td>
+                        <td style="white-space:nowrap;">${r.Distance.toFixed(2)}</td>
                         <td>
-                            <select class="tig-rev-select" data-idx="${i}" style="font-size:12px;">
+                            <select class="tig-rev-select" data-idx="${i}" style="font-size:12px; width:100%;">
                                 <option value="Review" selected>Review (Commercial)</option>
                                 <option value="Project Site Visit">Project Site Visit</option>
+                                <option value="Project Development">Project Development</option>
                                 <option value="Materials / Supplies">Materials / Supplies</option>
                                 <option value="Quote / Estimate">Quote / Estimate</option>
                                 <option value="Tools / Repair">Tools / Repair</option>
                                 <option value="Vehicle Maintenance & Parts">Vehicle Maintenance &amp; Parts</option>
+                                <option value="Return to Head Office / Dispatch">Return to Head Office / Dispatch</option>
                                 <option value="Personal">Personal (Non-Deductible)</option>
                             </select>
                         </td>
                     `;
                     tbody.appendChild(tr);
                 });
+
+                const selAllBox = document.getElementById('rev-select-all');
+                if (selAllBox) selAllBox.checked = false;
+                updateReviewSelectionCount();
+
+                document.querySelectorAll('.tig-rev-chk').forEach(chk => {
+                    chk.addEventListener('change', updateReviewSelectionCount);
+                });
+
+                document.querySelectorAll('.tig-rev-same').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        const targetDest = this.dataset.dest;
+                        document.querySelectorAll('.tig-rev-chk').forEach(chk => {
+                            if (chk.dataset.dest === targetDest) chk.checked = true;
+                        });
+                        updateReviewSelectionCount();
+                    });
+                });
+
                 document.querySelectorAll('.tig-rev-select').forEach(sel => {
                     sel.addEventListener('change', function() {
                         const idx = parseInt(this.dataset.idx, 10);

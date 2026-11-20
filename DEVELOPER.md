@@ -14,7 +14,7 @@ git status
 
 # 2. Stage and commit completed milestone
 git add -A
-git commit -m "feat: release v3.5.1 with Pixel 9 & Android Auto REST API"
+git commit -m "feat: release v3.6.0 with Pixel 9 & Android Auto REST API"
 git push origin main
 
 # 3. Build pristine WordPress-ready .zip (outputs ../tig-mileage-tracker.zip)
