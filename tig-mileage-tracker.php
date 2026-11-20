@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
  * Description: CRA-compliant mileage engine & REST API collector for Homeextent Inc. (2019 Ram 1500 Rebel). Supports Pixel 9 Bluetooth/Android Auto live sync, Google Timeline JSON, QBO receipt corroboration, and CPA-ready Excel workbooks.
- * Version: 3.4.4
+ * Version: 3.4.6
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.4.4');
+define('TIG_MILEAGE_VERSION', '3.4.6');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
 define('TIG_MILEAGE_TABLE', 'tig_mileage_trips');
 
@@ -2749,11 +2749,31 @@ document.getElementById('btn-load-live-trips').addEventListener('click', async f
     }
     out.push(cur.trim()); return out;
   }
+  function findBox2(){
+    const hdr = Array.from(document.querySelectorAll("div,span,p,strong,h3,h4")).find(el =>
+      /QBO Supplier Transactions/i.test(el.textContent || "") && (el.textContent || "").length < 120
+    );
+    if (!hdr) return null;
+    let cur = hdr.parentElement;
+    while (cur && cur !== document.body){
+      if (cur.querySelector('input[type="file"]') || /Click to attach|Indexed \d+ commercial/i.test(cur.textContent || "")) return cur;
+      cur = cur.parentElement;
+    }
+    return hdr.parentElement;
+  }
   function findStatusEl(){
-    return document.getElementById("qbo-status") ||
-      Array.from(document.querySelectorAll("div,span,p,small")).find(el =>
-        el.children.length === 0 && /Indexed \d+ commercial dates/i.test(el.textContent || "")
+    const byId = document.getElementById("qbo-status") || document.getElementById("qbo-status-text");
+    if (byId) return byId;
+    const box = findBox2();
+    if (box){
+      const sub = Array.from(box.querySelectorAll("div,span,p,small")).find(el =>
+        el.children.length === 0 && /Click to attach|Indexed \d+ commercial/i.test(el.textContent || "")
       );
+      if (sub) return sub;
+    }
+    return Array.from(document.querySelectorAll("div,span,p,small")).find(el =>
+      el.children.length === 0 && /Click to attach Transaction List|Indexed \d+ commercial/i.test(el.textContent || "")
+    );
   }
   function ingestQbo(text, fileName){
     const lines = String(text||"").split(/\r?\n/);
@@ -2782,6 +2802,12 @@ document.getElementById('btn-load-live-trips').addEventListener('click', async f
     if (st){
       st.textContent = `✓ Indexed ${dates} commercial dates (${rcpts} receipts)` + (fileName ? ` — ${fileName}` : "");
       st.style.color = "#15803d";
+      st.style.fontWeight = "600";
+    }
+    const box = findBox2();
+    if (box && rcpts > 0){
+      box.style.borderColor = "#86efac";
+      box.style.background = "#f0fdf4";
     }
     if (typeof processedTrips !== "undefined" && Array.isArray(processedTrips) && processedTrips.length){
       processedTrips.forEach(r => {
@@ -2800,46 +2826,42 @@ document.getElementById('btn-load-live-trips').addEventListener('click', async f
       if (typeof refreshSummaryAndReview === "function") refreshSummaryAndReview();
     }
   }
-  function bindQboBox(){
-    const st = findStatusEl();
-    const box = st ? (st.closest("div[style],label,.tig-card,.card") || st.parentElement) : null;
-    const inputs = Array.from(document.querySelectorAll('input[type="file"]')).filter(inp => {
-      const acc = (inp.getAttribute("accept")||"").toLowerCase();
-      const idn = (inp.id + " " + inp.name).toLowerCase();
-      return acc.includes("csv") || idn.includes("qbo") || idn.includes("csv") || (box && box.contains(inp));
-    });
-    const runFile = f => {
-      if (!f) return;
-      const r = new FileReader();
-      r.onload = e => ingestQbo(e.target.result, f.name);
-      r.readAsText(f);
-    };
-    inputs.forEach(inp => {
-      if (inp.dataset.tigQboBound) return;
-      inp.dataset.tigQboBound = "1";
-      inp.addEventListener("change", e => {
-        if (e.target.files && e.target.files[0]) runFile(e.target.files[0]);
-      }, true);
-    });
-    const dropTarget = box || (inputs[0] && inputs[0].parentElement);
-    if (dropTarget && !dropTarget.dataset.tigQboDrop){
-      dropTarget.dataset.tigQboDrop = "1";
-      ["dragenter","dragover"].forEach(ev => dropTarget.addEventListener(ev, e => {
-        e.preventDefault(); e.stopPropagation();
-        dropTarget.style.borderColor = "#1f497d"; dropTarget.style.background = "#eff6ff";
-      }, true));
-      ["dragleave","drop"].forEach(ev => dropTarget.addEventListener(ev, e => {
-        e.preventDefault(); e.stopPropagation();
-        dropTarget.style.borderColor = ""; dropTarget.style.background = "";
-      }, true));
-      dropTarget.addEventListener("drop", e => {
-        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) runFile(e.dataTransfer.files[0]);
-      }, true);
-    }
+  function readCsvFile(f){
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = e => ingestQbo(e.target.result, f.name);
+    r.readAsText(f);
   }
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bindQboBox);
-  else bindQboBox();
-  setTimeout(bindQboBox, 500);
+  document.addEventListener("change", function(e){
+    const inp = e.target;
+    if (!inp || inp.tagName !== "INPUT" || inp.type !== "file") return;
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    const isCsv = /\.csv$/i.test(f.name) || /csv/i.test(inp.accept || "");
+    if (!isCsv) return;
+    e.stopImmediatePropagation();
+    readCsvFile(f);
+  }, true);
+  function wireDrop(){
+    const box = findBox2();
+    if (!box || box.dataset.tigQboDrop) return;
+    box.dataset.tigQboDrop = "1";
+    ["dragenter","dragover"].forEach(ev => box.addEventListener(ev, e => {
+      e.preventDefault(); e.stopPropagation();
+      box.style.borderColor = "#1f497d"; box.style.background = "#eff6ff";
+    }, true));
+    ["dragleave","drop"].forEach(ev => box.addEventListener(ev, e => {
+      e.preventDefault(); e.stopPropagation();
+      box.style.borderColor = ""; box.style.background = "";
+    }, true));
+    box.addEventListener("drop", e => {
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f){ e.stopImmediatePropagation(); readCsvFile(f); }
+    }, true);
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wireDrop);
+  else wireDrop();
+  setTimeout(wireDrop, 400);
 })();
 
 </script>

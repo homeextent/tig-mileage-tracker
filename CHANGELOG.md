@@ -8,6 +8,16 @@ All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPres
 
 
 
+
+
+## [3.4.6] - 2026-11-19
+### Fixed
+- **Box 2 Visual Confirmation & Status Subtitle Selector:** Matched the initial Box 2 subtitle ("Click to attach Transaction List by Supplier.csv") so selecting or dropping a QBO CSV immediately updates the status text and turns Box 2 green with receipt counts.
+
+## [3.4.5] - 2026-11-19
+### Fixed
+- **Prevent Legacy CSV Handler Overwrite:** Added capture-phase stopImmediatePropagation on CSV file selection and Box 2 drag-and-drop so the legacy ISO-only parser no longer resets qboIndex back to 0.
+
 ## [3.4.4] - 2026-11-19
 ### Fixed
 - **Universal Box 2 CSV File-Input & Drag-and-Drop Binding:** Auto-detected the QBO CSV file input and status banner inside Step 1 Box 2 regardless of input ID, and enabled instant MM/DD/YYYY supplier receipt indexing on both file selection and drag-and-drop.
