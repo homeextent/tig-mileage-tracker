@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
  * Description: CRA-compliant mileage engine & REST API collector for Homeextent Inc. (2019 Ram 1500 Rebel). Supports Pixel 9 Bluetooth/Android Auto live sync, Google Timeline JSON, QBO receipt corroboration, and CPA-ready Excel workbooks.
- * Version: 3.4.3
+ * Version: 3.4.4
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.4.3');
+define('TIG_MILEAGE_VERSION', '3.4.4');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
 define('TIG_MILEAGE_TABLE', 'tig_mileage_trips');
 
@@ -2720,56 +2720,127 @@ document.getElementById('btn-load-live-trips').addEventListener('click', async f
         });
     })();
     
-function _normQboDate(raw){const t=String(raw||"").trim();
-let m=t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-if(m)return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
-m=t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-if(m)return `${m[3]}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")}`;
-return "";}
-
-function _splitCsv(line){const out=[];let cur="",q=false;
-for(let i=0;i<line.length;i++){const c=line[i];
-if(c==='"'){if(q&&line[i+1]==='"'){cur+='"';i++;}else q=!q;}
-else if(c===','&&!q){out.push(cur.trim());cur="";}else cur+=c;}
-out.push(cur.trim());return out;}
-
-function _ingestQboCsv(text){
-const lines=String(text||"").split(/\r?\n/);let curSup="",dates=0,rcpts=0;
-if(typeof qboIndex!=="undefined"){for(const k in qboIndex)delete qboIndex[k];}
-
-const allow=["home depot","rona","turkstra","st. catharines building","regional doors","convoy","a-1 flooring","home hardware","art's tools","a & a","fonthill lumber","princess auto","canadian tire","goemans","stark lumber","byrcon","sherwin","dulux","wolseley","nedco","westburne","noble","queenston tire","performance chrysler","partsource","parts source","john bear","superior petrofuels","esso","shell","petro-canada","petrocan","pioneer","mobil","475 high performance","boncor","patene","slack lumber","metal supermarkets"];
-
-for(const ln of lines){if(!ln.trim())continue;const c=_splitCsv(ln);
-const c0=(c[0]||"").trim(),c1=(c[1]||"").trim(),tp=(c[2]||"").trim().toLowerCase();
-if(c0&&!c1&&!c0.toLowerCase().startsWith("total for")){curSup=c0.replace(/\s+/g," ");continue;}
-
-const iso=_normQboDate(c1);if(!iso||!curSup)continue;
-if(tp.includes("bill payment")||tp.includes("cheque"))continue;
-const amt=parseFloat(String(c[c.length-1]||"0").replace(/[$,]/g,""))||0;
-if(amt<=0)continue;const low=curSup.toLowerCase();
-if(!allow.some(k=>low.includes(k)))continue;
-if(!qboIndex[iso]){qboIndex[iso]=[];dates++;}
-qboIndex[iso].push({name:curSup,amt});rcpts++;}
-
-const st=document.getElementById("qbo-status");
-if(st){st.textContent=`✓ Indexed ${dates} commercial dates (${rcpts} receipts)`;st.style.color="#15803d";}
-
-if(Array.isArray(processedTrips)&&processedTrips.length){
-processedTrips.forEach(r=>{if(r.Purpose==="Review"||SUPPLIER_PURPOSES.includes(r.Purpose)){
-const tx=matchQboForTrip(r.Date,r.Destination,r.Category,r.Purpose);
-if(tx){r.QBO=`QBO Receipt: $${tx.amt.toFixed(2)} (${tx.name})`;
-if(r.Purpose==="Review"){r.Purpose="Materials / Supplies";r.Category=`QBO Verified: ${tx.name}`;}}}});
-refreshSummaryAndReview();}}
-
-document.addEventListener("DOMContentLoaded",function(){
-const inp=document.getElementById("input-qbo");if(!inp)return;
-const box=inp.closest("div[style],label,.tig-card")||inp.parentElement;
-const run=f=>{if(!f)return;const r=new FileReader();r.onload=e=>_ingestQboCsv(e.target.result);r.readAsText(f);};
-inp.addEventListener("change",e=>run(e.target.files[0]),true);
-
-if(box){["dragenter","dragover"].forEach(ev=>box.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();box.style.borderColor="#1f497d";box.style.background="#eff6ff";}));
-["dragleave","drop"].forEach(ev=>box.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();box.style.borderColor="";box.style.background="";}));
-box.addEventListener("drop",e=>{if(e.dataTransfer&&e.dataTransfer.files[0])run(e.dataTransfer.files[0]);});}});
+(function(){
+  const allow = [
+    "home depot","rona","turkstra","st. catharines building","regional doors",
+    "convoy","a-1 flooring","home hardware","art's tools","a & a",
+    "fonthill lumber","princess auto","canadian tire","goemans","stark lumber",
+    "byrcon","sherwin","dulux","wolseley","nedco","westburne","noble",
+    "queenston tire","performance chrysler","partsource","parts source",
+    "john bear","superior petrofuels","esso","shell","petro-canada",
+    "petrocan","pioneer","mobil","475 high performance","boncor",
+    "patene","slack lumber","metal supermarkets"
+  ];
+  function normDate(raw){
+    const t = String(raw||"").trim();
+    let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (m) return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+    m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) return `${m[3]}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")}`;
+    return "";
+  }
+  function splitCsv(line){
+    const out=[]; let cur="", q=false;
+    for (let i=0; i<line.length; i++){
+      const c=line[i];
+      if (c==='"'){ if (q && line[i+1]==='"'){ cur+='"'; i++; } else q=!q; }
+      else if (c===',' && !q){ out.push(cur.trim()); cur=""; }
+      else cur+=c;
+    }
+    out.push(cur.trim()); return out;
+  }
+  function findStatusEl(){
+    return document.getElementById("qbo-status") ||
+      Array.from(document.querySelectorAll("div,span,p,small")).find(el =>
+        el.children.length === 0 && /Indexed \d+ commercial dates/i.test(el.textContent || "")
+      );
+  }
+  function ingestQbo(text, fileName){
+    const lines = String(text||"").split(/\r?\n/);
+    const idxMap = (typeof qboIndex !== "undefined" && qboIndex) ? qboIndex : (window.qboIndex = {});
+    for (const k in idxMap) delete idxMap[k];
+    let curSup = "", dates = 0, rcpts = 0;
+    for (const ln of lines){
+      if (!ln.trim()) continue;
+      const c = splitCsv(ln);
+      const c0 = (c[0]||"").trim(), c1 = (c[1]||"").trim(), tp = (c[2]||"").trim().toLowerCase();
+      if (c0 && !c1 && !c0.toLowerCase().startsWith("total for")){
+        curSup = c0.replace(/\s+/g," "); continue;
+      }
+      const iso = normDate(c1);
+      if (!iso || !curSup) continue;
+      if (tp.includes("bill payment") || tp.includes("cheque") || tp.includes("credit")) continue;
+      const amt = parseFloat(String(c[c.length-1]||"0").replace(/[$,]/g,"")) || 0;
+      if (amt <= 0) continue;
+      const low = curSup.toLowerCase();
+      if (!allow.some(k => low.includes(k))) continue;
+      if (!idxMap[iso]){ idxMap[iso] = []; dates++; }
+      idxMap[iso].push({ name: curSup, amt });
+      rcpts++;
+    }
+    const st = findStatusEl();
+    if (st){
+      st.textContent = `✓ Indexed ${dates} commercial dates (${rcpts} receipts)` + (fileName ? ` — ${fileName}` : "");
+      st.style.color = "#15803d";
+    }
+    if (typeof processedTrips !== "undefined" && Array.isArray(processedTrips) && processedTrips.length){
+      processedTrips.forEach(r => {
+        const list = idxMap[r.Date];
+        if (!list || !list.length) return;
+        const destLow = String(r.Destination||"").toLowerCase();
+        const hit = list.find(x => destLow.includes(x.name.toLowerCase().split(" ")[0])) || list[0];
+        if (hit && (r.Purpose === "Review" || /Materials|Supplies|Vehicle/i.test(String(r.Purpose||"")))){
+          r.QBO = `QBO Receipt: $${hit.amt.toFixed(2)} (${hit.name})`;
+          if (r.Purpose === "Review"){
+            r.Purpose = "Materials / Supplies";
+            r.Category = `QBO Verified: ${hit.name}`;
+          }
+        }
+      });
+      if (typeof refreshSummaryAndReview === "function") refreshSummaryAndReview();
+    }
+  }
+  function bindQboBox(){
+    const st = findStatusEl();
+    const box = st ? (st.closest("div[style],label,.tig-card,.card") || st.parentElement) : null;
+    const inputs = Array.from(document.querySelectorAll('input[type="file"]')).filter(inp => {
+      const acc = (inp.getAttribute("accept")||"").toLowerCase();
+      const idn = (inp.id + " " + inp.name).toLowerCase();
+      return acc.includes("csv") || idn.includes("qbo") || idn.includes("csv") || (box && box.contains(inp));
+    });
+    const runFile = f => {
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = e => ingestQbo(e.target.result, f.name);
+      r.readAsText(f);
+    };
+    inputs.forEach(inp => {
+      if (inp.dataset.tigQboBound) return;
+      inp.dataset.tigQboBound = "1";
+      inp.addEventListener("change", e => {
+        if (e.target.files && e.target.files[0]) runFile(e.target.files[0]);
+      }, true);
+    });
+    const dropTarget = box || (inputs[0] && inputs[0].parentElement);
+    if (dropTarget && !dropTarget.dataset.tigQboDrop){
+      dropTarget.dataset.tigQboDrop = "1";
+      ["dragenter","dragover"].forEach(ev => dropTarget.addEventListener(ev, e => {
+        e.preventDefault(); e.stopPropagation();
+        dropTarget.style.borderColor = "#1f497d"; dropTarget.style.background = "#eff6ff";
+      }, true));
+      ["dragleave","drop"].forEach(ev => dropTarget.addEventListener(ev, e => {
+        e.preventDefault(); e.stopPropagation();
+        dropTarget.style.borderColor = ""; dropTarget.style.background = "";
+      }, true));
+      dropTarget.addEventListener("drop", e => {
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) runFile(e.dataTransfer.files[0]);
+      }, true);
+    }
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bindQboBox);
+  else bindQboBox();
+  setTimeout(bindQboBox, 500);
+})();
 
 </script>
     <?php

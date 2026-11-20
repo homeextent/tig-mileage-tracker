@@ -7,6 +7,11 @@ All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPres
 
 
 
+
+## [3.4.4] - 2026-11-19
+### Fixed
+- **Universal Box 2 CSV File-Input & Drag-and-Drop Binding:** Auto-detected the QBO CSV file input and status banner inside Step 1 Box 2 regardless of input ID, and enabled instant MM/DD/YYYY supplier receipt indexing on both file selection and drag-and-drop.
+
 ## [3.4.3] - 2026-11-19
 ### Fixed
 - **Hotfix JS Regex Escape in QBO Parser:** Fixed unescaped newline in regex literal that halted admin UI JavaScript execution in v3.4.2; restored full UI interactivity and QBO CSV drag-and-drop.
