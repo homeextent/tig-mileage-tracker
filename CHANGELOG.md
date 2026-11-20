@@ -6,6 +6,11 @@ All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPres
 
 
 
+
+## [3.4.3] - 2026-11-19
+### Fixed
+- **Hotfix JS Regex Escape in QBO Parser:** Fixed unescaped newline in regex literal that halted admin UI JavaScript execution in v3.4.2; restored full UI interactivity and QBO CSV drag-and-drop.
+
 ## [3.4.2] - 2026-11-19
 ### Fixed
 - **QBO Supplier CSV Drag-and-Drop & MM/DD/YYYY Support:** Added drag-and-drop listeners to Step 1 Box 2, normalized QBO MM/DD/YYYY dates and double-spaced supplier names, and enabled live re-corroboration on loaded trips.

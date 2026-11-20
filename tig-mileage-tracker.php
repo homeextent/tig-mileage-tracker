@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
  * Description: CRA-compliant mileage engine & REST API collector for Homeextent Inc. (2019 Ram 1500 Rebel). Supports Pixel 9 Bluetooth/Android Auto live sync, Google Timeline JSON, QBO receipt corroboration, and CPA-ready Excel workbooks.
- * Version: 3.4.2
+ * Version: 3.4.3
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.4.2');
+define('TIG_MILEAGE_VERSION', '3.4.3');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
 define('TIG_MILEAGE_TABLE', 'tig_mileage_trips');
 
@@ -2734,8 +2734,7 @@ else if(c===','&&!q){out.push(cur.trim());cur="";}else cur+=c;}
 out.push(cur.trim());return out;}
 
 function _ingestQboCsv(text){
-const lines=String(text||"").split(/?
-/);let curSup="",dates=0,rcpts=0;
+const lines=String(text||"").split(/\r?\n/);let curSup="",dates=0,rcpts=0;
 if(typeof qboIndex!=="undefined"){for(const k in qboIndex)delete qboIndex[k];}
 
 const allow=["home depot","rona","turkstra","st. catharines building","regional doors","convoy","a-1 flooring","home hardware","art's tools","a & a","fonthill lumber","princess auto","canadian tire","goemans","stark lumber","byrcon","sherwin","dulux","wolseley","nedco","westburne","noble","queenston tire","performance chrysler","partsource","parts source","john bear","superior petrofuels","esso","shell","petro-canada","petrocan","pioneer","mobil","475 high performance","boncor","patene","slack lumber","metal supermarkets"];
@@ -2755,11 +2754,22 @@ qboIndex[iso].push({name:curSup,amt});rcpts++;}
 const st=document.getElementById("qbo-status");
 if(st){st.textContent=`✓ Indexed ${dates} commercial dates (${rcpts} receipts)`;st.style.color="#15803d";}
 
+if(Array.isArray(processedTrips)&&processedTrips.length){
+processedTrips.forEach(r=>{if(r.Purpose==="Review"||SUPPLIER_PURPOSES.includes(r.Purpose)){
+const tx=matchQboForTrip(r.Date,r.Destination,r.Category,r.Purpose);
+if(tx){r.QBO=`QBO Receipt: $${tx.amt.toFixed(2)} (${tx.name})`;
+if(r.Purpose==="Review"){r.Purpose="Materials / Supplies";r.Category=`QBO Verified: ${tx.name}`;}}}});
+refreshSummaryAndReview();}}
+
 document.addEventListener("DOMContentLoaded",function(){
 const inp=document.getElementById("input-qbo");if(!inp)return;
 const box=inp.closest("div[style],label,.tig-card")||inp.parentElement;
 const run=f=>{if(!f)return;const r=new FileReader();r.onload=e=>_ingestQboCsv(e.target.result);r.readAsText(f);};
 inp.addEventListener("change",e=>run(e.target.files[0]),true);
+
+if(box){["dragenter","dragover"].forEach(ev=>box.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();box.style.borderColor="#1f497d";box.style.background="#eff6ff";}));
+["dragleave","drop"].forEach(ev=>box.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();box.style.borderColor="";box.style.background="";}));
+box.addEventListener("drop",e=>{if(e.dataTransfer&&e.dataTransfer.files[0])run(e.dataTransfer.files[0]);});}});
 
 </script>
     <?php
