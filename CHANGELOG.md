@@ -5,6 +5,11 @@ All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPres
 
 
 
+
+## [3.4.2] - 2026-11-19
+### Fixed
+- **QBO Supplier CSV Drag-and-Drop & MM/DD/YYYY Support:** Added drag-and-drop listeners to Step 1 Box 2, normalized QBO MM/DD/YYYY dates and double-spaced supplier names, and enabled live re-corroboration on loaded trips.
+
 ## [3.4.1] - 2026-11-19
 ### Fixed
 - **Async Timeline Merge Execution:** Wrapped the hybrid Google Timeline + Pixel 9 merge inside an async IIFE (`getLiveRowsForMerge`) so synchronous `FileReader.onload` callbacks execute cleanly with zero JavaScript syntax errors.

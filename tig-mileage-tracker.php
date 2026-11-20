@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
  * Description: CRA-compliant mileage engine & REST API collector for Homeextent Inc. (2019 Ram 1500 Rebel). Supports Pixel 9 Bluetooth/Android Auto live sync, Google Timeline JSON, QBO receipt corroboration, and CPA-ready Excel workbooks.
- * Version: 3.4.1
+ * Version: 3.4.2
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.4.1');
+define('TIG_MILEAGE_VERSION', '3.4.2');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
 define('TIG_MILEAGE_TABLE', 'tig_mileage_trips');
 
@@ -2719,6 +2719,48 @@ document.getElementById('btn-load-live-trips').addEventListener('click', async f
             setTimeout(() => document.getElementById('btn-load-live-trips')?.click(), 120);
         });
     })();
-    </script>
+    
+function _normQboDate(raw){const t=String(raw||"").trim();
+let m=t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+if(m)return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+m=t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+if(m)return `${m[3]}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")}`;
+return "";}
+
+function _splitCsv(line){const out=[];let cur="",q=false;
+for(let i=0;i<line.length;i++){const c=line[i];
+if(c==='"'){if(q&&line[i+1]==='"'){cur+='"';i++;}else q=!q;}
+else if(c===','&&!q){out.push(cur.trim());cur="";}else cur+=c;}
+out.push(cur.trim());return out;}
+
+function _ingestQboCsv(text){
+const lines=String(text||"").split(/?
+/);let curSup="",dates=0,rcpts=0;
+if(typeof qboIndex!=="undefined"){for(const k in qboIndex)delete qboIndex[k];}
+
+const allow=["home depot","rona","turkstra","st. catharines building","regional doors","convoy","a-1 flooring","home hardware","art's tools","a & a","fonthill lumber","princess auto","canadian tire","goemans","stark lumber","byrcon","sherwin","dulux","wolseley","nedco","westburne","noble","queenston tire","performance chrysler","partsource","parts source","john bear","superior petrofuels","esso","shell","petro-canada","petrocan","pioneer","mobil","475 high performance","boncor","patene","slack lumber","metal supermarkets"];
+
+for(const ln of lines){if(!ln.trim())continue;const c=_splitCsv(ln);
+const c0=(c[0]||"").trim(),c1=(c[1]||"").trim(),tp=(c[2]||"").trim().toLowerCase();
+if(c0&&!c1&&!c0.toLowerCase().startsWith("total for")){curSup=c0.replace(/\s+/g," ");continue;}
+
+const iso=_normQboDate(c1);if(!iso||!curSup)continue;
+if(tp.includes("bill payment")||tp.includes("cheque"))continue;
+const amt=parseFloat(String(c[c.length-1]||"0").replace(/[$,]/g,""))||0;
+if(amt<=0)continue;const low=curSup.toLowerCase();
+if(!allow.some(k=>low.includes(k)))continue;
+if(!qboIndex[iso]){qboIndex[iso]=[];dates++;}
+qboIndex[iso].push({name:curSup,amt});rcpts++;}
+
+const st=document.getElementById("qbo-status");
+if(st){st.textContent=`✓ Indexed ${dates} commercial dates (${rcpts} receipts)`;st.style.color="#15803d";}
+
+document.addEventListener("DOMContentLoaded",function(){
+const inp=document.getElementById("input-qbo");if(!inp)return;
+const box=inp.closest("div[style],label,.tig-card")||inp.parentElement;
+const run=f=>{if(!f)return;const r=new FileReader();r.onload=e=>_ingestQboCsv(e.target.result);r.readAsText(f);};
+inp.addEventListener("change",e=>run(e.target.files[0]),true);
+
+</script>
     <?php
 }
