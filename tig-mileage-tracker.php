@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
  * Description: CRA-compliant mileage engine & REST API collector for Homeextent Inc. (2019 Ram 1500 Rebel). Supports Pixel 9 Bluetooth/Android Auto live sync, Google Timeline JSON, QBO receipt corroboration, and CPA-ready Excel workbooks.
- * Version: 3.3.2
+ * Version: 3.4.0
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.3.2');
+define('TIG_MILEAGE_VERSION', '3.4.0');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
 define('TIG_MILEAGE_TABLE', 'tig_mileage_trips');
 
@@ -1069,7 +1069,7 @@ function tig_mileage_tracker_admin_page() {
                     <div id="box-timeline" style="border: 2px dashed #c3c4c7; border-radius: 6px; padding: 24px 20px; text-align: center; background: #f9f9f9; cursor: pointer;">
                         <span class="dashicons dashicons-cloud-upload" style="font-size: 34px; width: 34px; height: 34px; color: #1F497D;"></span>
                         <div style="font-size: 15px; font-weight: 600; color: #1d2327; margin-top: 8px;">Source B: Drop Google Timeline (.json)</div>
-                        <div style="font-size: 12px; color: #646970; margin-top: 4px;">Historical 2025/2026 baseline import (supports Android <code>semanticSegments</code> &amp; iOS <code>timelineObjects</code>, 50MB+).</div>
+                        <div style="font-size: 12px; color: #646970; margin-top: 4px;">Historical 2025/2026 baseline import (supports Android <code>semanticSegments</code> &amp; iOS <code>timelineObjects</code>, 50MB+ — auto-merges with live Pixel 9 trips).</div>
                         <input type="file" id="input-timeline" accept=".json" style="display: none;" />
                     </div>
                 </div>
@@ -2150,6 +2150,112 @@ function tig_mileage_tracker_admin_page() {
             return data.data.trips || [];
         }
 
+        const cachedTimelineTripsByYear = {};
+
+        function parseTripTimestampMs(d, t) {
+            if (!d) return 0;
+            const p = String(d).split('-').map(Number);
+            if (p.length !== 3 || p.some(isNaN)) return 0;
+            let h = 0, m = 0;
+            const mt = String(t || '').trim().match(/^(\\d{1,2}):(\\d{2})(?:\\s*(AM|PM))?$/i);
+            if (mt) {
+                h = parseInt(mt[1], 10);
+                m = parseInt(mt[2], 10);
+                const mer = (mt[3] || '').toUpperCase();
+                if (mer === 'PM' && h < 12) h += 12;
+                if (mer === 'AM' && h === 12) h = 0;
+            }
+            return new Date(p[0], p[1] - 1, p[2], h, m, 0, 0).getTime();
+        }
+
+        function buildNormalizedLiveTrips(liveRows, targetYear) {
+            return liveRows.map(t => {
+                const [origClean] = classifyEndpoint(t.origin_raw || t.origin, t.day, targetYear);
+                let [destClean, purpose, category] = classifyEndpoint(
+                    t.dest_raw || t.destination, t.day, targetYear
+                );
+                let qboNote = '';
+                const isPersOrig = ['Personal', 'ZEHRS', 'Fit4Less', 'Out of Region'].some(
+                    k => origClean.includes(k)
+                );
+                if (isPersOrig && purpose === 'Return to Head Office / Dispatch') {
+                    purpose = 'Personal';
+                    category = 'Return from Personal';
+                }
+                if (t.manual_purpose) {
+                    purpose = t.manual_purpose;
+                    category = t.manual_category || (purpose === 'Personal' ? 'Personal (Pixel)' : purpose);
+                }
+                if (purpose === 'Review' || SUPPLIER_PURPOSES.includes(purpose)) {
+                    const tx = matchQboForTrip(t.date, destClean, category, purpose);
+                    if (tx) {
+                        qboNote = `QBO Receipt: $${tx.amt.toFixed(2)} (${tx.name})`;
+                        if (purpose === 'Review') {
+                            purpose = 'Materials / Supplies';
+                            category = `QBO Verified: ${tx.name}`;
+                        }
+                    }
+                }
+                return {
+                    liveId: t.id,
+                    _tsMs: parseTripTimestampMs(t.date, t.departure),
+                    Date: t.date,
+                    Day: t.day,
+                    Departure: t.departure,
+                    Arrival: t.arrival,
+                    Origin: origClean,
+                    Destination: destClean,
+                    Distance: parseFloat(t.gps_km) || 0,
+                    OdoStart: 0,
+                    OdoEnd: 0,
+                    Purpose: purpose,
+                    Category: category,
+                    QBO: qboNote,
+                    Continuity: 'OK'
+                };
+            });
+        }
+
+        function mergeAndChainCombinedTrips(tlRows, liveObjs, targetYear) {
+            const tl = (tlRows || []).map(r => Object.assign({}, r, {
+                _tsMs: r._tsMs || parseTripTimestampMs(r.Date, r.Departure)
+            }));
+            const uniqTl = tl.filter(x => !liveObjs.some(lv =>
+                Math.abs((x._tsMs || 0) - (lv._tsMs || 0)) <= 300000 &&
+                Math.abs((x.Distance || 0) - (lv.Distance || 0)) <= 0.35
+            ));
+            const combined = [...uniqTl, ...liveObjs].sort(
+                (a, b) => (a._tsMs || 0) - (b._tsMs || 0)
+            );
+            const counts = {};
+            combined.forEach(r => {
+                counts[r.Destination] = (counts[r.Destination] || 0) + 1;
+            });
+            combined.forEach(r => {
+                if (r.Purpose === 'Review' && counts[r.Destination] === 1) {
+                    r.Purpose = 'Quote / Estimate';
+                    r.Category = 'Prospective Project';
+                }
+            });
+            cachedTimelineTripsByYear[targetYear] = combined.map(r => Object.assign({}, r));
+            setProgress(88, 'Merging historical Google Timeline with live Pixel 9 drives...');
+            let liveObjects = [];
+            try {
+                const liveRows = await fetchLiveTripsForYear(targetYear);
+                liveObjects = buildNormalizedLiveTrips(liveRows, targetYear);
+            } catch (_e) {}
+            mergeAndChainCombinedTrips(
+                cachedTimelineTripsByYear[targetYear],
+                liveObjects,
+                targetYear
+            );
+            const dl = document.getElementById('btn-download-xlsx');
+            if (dl && combined.length > 0) {
+                dl.disabled = false;
+                dl.style.opacity = '1';
+            }
+        }
+
         document.getElementById('btn-load-live-trips').addEventListener('click', async function() {
             const targetYear = document.getElementById('select-year').value;
             setProgress(30, `Fetching live Pixel 9 drives for ${targetYear}...`);
@@ -2164,65 +2270,12 @@ function tig_mileage_tracker_admin_page() {
                 }
 
                 setProgress(70, 'Classifying endpoints, matching QBO receipts & chaining odometers...');
-                const deduped = [];
-                for (const t of liveRows) {
-                    const [origClean] = classifyEndpoint(t.origin_raw || t.origin, t.day, targetYear);
-                    let [destClean, purpose, category] = classifyEndpoint(t.dest_raw || t.destination, t.day, targetYear);
-                    let qboNote = '';
-
-                    if (['Personal', 'ZEHRS', 'Fit4Less', 'Out of Region'].some(k => origClean.includes(k)) &&
-                        purpose === 'Return to Head Office / Dispatch') {
-                        purpose = 'Personal';
-                        category = 'Return from Personal';
-                    }
-
-                    if (t.manual_purpose) {
-                        purpose = t.manual_purpose;
-                        category = t.manual_category || (purpose === 'Personal' ? 'Personal (Pixel)' : purpose);
-                    }
-
-                    if (purpose === 'Review' || SUPPLIER_PURPOSES.includes(purpose)) {
-                        const matchedTx = matchQboForTrip(t.date, destClean, category, purpose);
-                        if (matchedTx) {
-                            qboNote = `QBO Receipt: $${matchedTx.amt.toFixed(2)} (${matchedTx.name})`;
-                            if (purpose === 'Review') {
-                                purpose = 'Materials / Supplies';
-                                category = `QBO Verified: ${matchedTx.name}`;
-                            }
-                        }
-                    }
-
-                    deduped.push({
-                        liveId: t.id,
-                        Date: t.date,
-                        Day: t.day,
-                        Departure: t.departure,
-                        Arrival: t.arrival,
-                        Origin: origClean,
-                        Destination: destClean,
-                        Distance: parseFloat(t.gps_km) || 0,
-                        OdoStart: 0,
-                        OdoEnd: 0,
-                        Purpose: purpose,
-                        Category: category,
-                        QBO: qboNote,
-                        Continuity: 'OK'
-                    });
-                }
-
-                const destCounts = {};
-                deduped.forEach(r => { destCounts[r.Destination] = (destCounts[r.Destination] || 0) + 1; });
-                deduped.forEach(r => {
-                    if (r.Purpose === 'Review' && destCounts[r.Destination] === 1) {
-                        r.Purpose = 'Quote / Estimate';
-                        r.Category = 'Prospective Project';
-                    }
-                });
-
-                chainOdometers(deduped, targetYear);
-                processedTrips = deduped;
-                refreshSummaryAndReview();
-
+                const liveObjects = buildNormalizedLiveTrips(liveRows, targetYear);
+                mergeAndChainCombinedTrips(
+                    cachedTimelineTripsByYear[targetYear] || [],
+                    liveObjects,
+                    targetYear
+                );
                 setProgress(100, 'Live Pixel 9 Trips Loaded');
                 document.getElementById('progress-bar').style.background = '#2e7d32';
                 document.getElementById('status-timeline').innerHTML = `<span style="color:#2e7d32;">&#10003; Loaded ${deduped.length} live Pixel 9 trips for ${targetYear}</span>`;
