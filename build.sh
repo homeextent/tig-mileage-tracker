@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-OUT_ZIP="../tig-mileage-tracker-v3.3.0.zip"
-rm -f "$OUT_ZIP"
-zip -r "$OUT_ZIP" tig-mileage-tracker.php data/geo_cache.json README.md SYSTEM_BIBLE.md CHANGELOG.md
-echo "Built $OUT_ZIP"
+cd "$(dirname "$0")/.."
+rm -f tig-mileage-tracker.zip tig-mileage-tracker-v*.zip
+zip -rq tig-mileage-tracker.zip tig-mileage-tracker \
+  -x "tig-mileage-tracker/.git/*" "tig-mileage-tracker/.git" \
+     "tig-mileage-tracker/.gitignore" "tig-mileage-tracker/.gitattributes" \
+     "tig-mileage-tracker/build.sh" "tig-mileage-tracker/DEVELOPER.md"
+echo "Built /media/jeremy/MEDIA/GITHUB/tig-mileage-tracker.zip"

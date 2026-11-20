@@ -2,6 +2,70 @@
 
 All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPress plugin are documented here.
 
+
+
+
+
+
+
+
+
+
+
+## [3.5.1] - 2026-11-19
+### Fixed
+- **QBO Grouped Supplier Report Header Detection:** Prevented `'Account full name'` on QBO's `Transaction List by Supplier.csv` header row from triggering flat-table detection so all 199 supplier/fuel receipts across 160 commercial dates index and save to WordPress `wp_options` (`tig_mileage_qbo_index`) permanently.
+
+## [3.5.0] - 2026-11-19
+### Added
+- **Full MySQL Persistence for Google Timeline & QBO Receipts:** Distilled Google Timeline `.json` trips are saved permanently to `wp_tig_mileage_trips` (`trigger_source = 'Timeline Import'`), and QBO Supplier `.csv` receipt indexes are persisted to `wp_options` (`tig_mileage_qbo_index`).
+- **Automatic Session Restoration & Inline DB Saving:** Page load and tax-year switching automatically load and merge all stored Pixel 9 and Timeline drives with saved QBO receipts, and edits in both the **Quick Review Queue** and **CRA Vehicle Logbook** persist directly to MySQL.
+
+## [3.4.7] - 2026-11-19
+### Fixed
+- **Standalone Load Live Pixel 9 Trips Button (`deduped` Scope Fix):** Promoted `deduped` to shared script/window scope so clicking **Load Live Pixel 9 Trips** works both standalone and alongside an imported Google Timeline baseline without throwing `deduped is not defined`.
+
+## [3.4.6] - 2026-11-19
+### Fixed
+- **Box 2 Visual Confirmation & Status Subtitle Selector:** Matched the initial Box 2 subtitle ("Click to attach Transaction List by Supplier.csv") so selecting or dropping a QBO CSV immediately updates the status text and turns Box 2 green with receipt counts.
+
+## [3.4.5] - 2026-11-19
+### Fixed
+- **Prevent Legacy CSV Handler Overwrite:** Added capture-phase stopImmediatePropagation on CSV file selection and Box 2 drag-and-drop so the legacy ISO-only parser no longer resets qboIndex back to 0.
+
+## [3.4.4] - 2026-11-19
+### Fixed
+- **Universal Box 2 CSV File-Input & Drag-and-Drop Binding:** Auto-detected the QBO CSV file input and status banner inside Step 1 Box 2 regardless of input ID, and enabled instant MM/DD/YYYY supplier receipt indexing on both file selection and drag-and-drop.
+
+## [3.4.3] - 2026-11-19
+### Fixed
+- **Hotfix JS Regex Escape in QBO Parser:** Fixed unescaped newline in regex literal that halted admin UI JavaScript execution in v3.4.2; restored full UI interactivity and QBO CSV drag-and-drop.
+
+## [3.4.2] - 2026-11-19
+### Fixed
+- **QBO Supplier CSV Drag-and-Drop & MM/DD/YYYY Support:** Added drag-and-drop listeners to Step 1 Box 2, normalized QBO MM/DD/YYYY dates and double-spaced supplier names, and enabled live re-corroboration on loaded trips.
+
+## [3.4.1] - 2026-11-19
+### Fixed
+- **Async Timeline Merge Execution:** Wrapped the hybrid Google Timeline + Pixel 9 merge inside an async IIFE (`getLiveRowsForMerge`) so synchronous `FileReader.onload` callbacks execute cleanly with zero JavaScript syntax errors.
+
+## [3.4.0] - 2026-11-19
+### Added
+- **Hybrid Google Timeline + Live Pixel 9 Logbook Merge:** Importing a Google Timeline `.json` into **Source B** caches the baseline for that year and automatically merges/deduplicates it (`±5 min`, `±0.35 km`) with all stored Pixel 9 trips before chaining odometers.
+
+## [3.3.2] - 2026-11-13
+### Added
+- **Interactive CRA Vehicle Logbook Preview & Inline Editor (Tab 1, Step 3):** Displays the full chained logbook table (`Date & Time`, editable `Origin`, editable `Destination`, `KM`, chained `Odo Start -> Odo End`, `Work`/`Personal` type, and `CRA Purpose`) directly above the `.xlsx` download button with live odometer and KPI recalculation.
+- **Full Inline Editing in Stored Pixel 9 Trips Drawer:** Added editable `Origin` and `Destination` inputs, `Work (Deductible)` / `Personal (Non-Deductible)` selector, `CRA Purpose` dropdown, and `Save` button persisted via `tig_live_trips_action`.
+
+### Fixed
+- **Removed Premature 2027 Placeholder Anchor:** Stripped pre-seeded future-dated (`2027-01-01`) anchor defaults and added a server-side future-date guard in `tig_mileage_get_anchors_or_default()`.
+- **WordPress In-Place Update Packaging (`build.sh`):** Packaged files under a single top-level `tig-mileage-tracker/` folder into an unversioned `tig-mileage-tracker.zip` so WordPress always offers **Replace current with uploaded**.
+
+## [3.3.1] - 2026-11-13
+### Added
+- **Auto-Load Stored Pixel 9 Drives:** Tab 1 automatically loads and renders stored Pixel 9 trips on page open and when switching tax years.
+
 ## [3.3.0] - 2026-11-12
 ### Added
 - **WordPress REST API (`/wp-json/tig-mileage/v1/`):** Added `GET /status`, `POST /trips`, `PATCH /trips/{id}`, `POST /locations` (1-tap GPS site pinning), and `POST /anchors` (odometer check-ins with WordPress Media Library cluster photo upload), secured via WordPress Application Passwords with SiteGround `HTTP_AUTHORIZATION` / `X-TIG-Auth` header fallback.
