@@ -10,6 +10,11 @@ All notable changes to the Homeextent Inc. vehicle mileage pipeline and WordPres
 
 
 
+
+## [3.4.7] - 2026-11-19
+### Fixed
+- **Standalone Load Live Pixel 9 Trips Button (`deduped` Scope Fix):** Promoted `deduped` to shared script/window scope so clicking **Load Live Pixel 9 Trips** works both standalone and alongside an imported Google Timeline baseline without throwing `deduped is not defined`.
+
 ## [3.4.6] - 2026-11-19
 ### Fixed
 - **Box 2 Visual Confirmation & Status Subtitle Selector:** Matched the initial Box 2 subtitle ("Click to attach Transaction List by Supplier.csv") so selecting or dropping a QBO CSV immediately updates the status text and turns Box 2 green with receipt counts.

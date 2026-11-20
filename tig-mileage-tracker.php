@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TIG Corporate Mileage Tracker
  * Description: CRA-compliant mileage engine & REST API collector for Homeextent Inc. (2019 Ram 1500 Rebel). Supports Pixel 9 Bluetooth/Android Auto live sync, Google Timeline JSON, QBO receipt corroboration, and CPA-ready Excel workbooks.
- * Version: 3.4.6
+ * Version: 3.4.7
  * Author: Homeextent Inc. / The Innovative Group
  */
 
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TIG_MILEAGE_VERSION', '3.4.6');
+define('TIG_MILEAGE_VERSION', '3.4.7');
 define('TIG_MILEAGE_DIR', plugin_dir_path(__FILE__));
 define('TIG_MILEAGE_TABLE', 'tig_mileage_trips');
 
@@ -1317,6 +1317,8 @@ function tig_mileage_tracker_admin_page() {
 
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" onerror="this.onerror=null;this.src='https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js';"></script>
     <script>
+var deduped = Array.isArray(window.deduped) ? window.deduped : [];
+
     (function() {
         const AJAX_URL = <?php echo wp_json_encode($ajax_url); ?>;
         const NONCE = <?php echo wp_json_encode($nonce); ?>;
@@ -2463,7 +2465,7 @@ document.getElementById('btn-load-live-trips').addEventListener('click', async f
                         setProgress(80, 'Classifying endpoints & chaining odometers...');
                         rawTrips.sort((a, b) => a.ms - b.ms);
                         const seen = new Set();
-                        const deduped = [];
+                        window.deduped = deduped = [];
 
                         for (const t of rawTrips) {
                             const origRaw = geoCache[t.oKey] || t.oKey;
@@ -2721,6 +2723,7 @@ document.getElementById('btn-load-live-trips').addEventListener('click', async f
     })();
     
 (function(){
+  if (!Array.isArray(window.deduped)) window.deduped = [];
   const allow = [
     "home depot","rona","turkstra","st. catharines building","regional doors",
     "convoy","a-1 flooring","home hardware","art's tools","a & a",
